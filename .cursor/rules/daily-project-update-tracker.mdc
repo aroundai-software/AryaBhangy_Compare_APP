@@ -1,0 +1,40 @@
+---
+description: Keep Aryabangi Motors Daily Project Update Tracker filled every working day
+alwaysApply: true
+---
+
+# Daily Project Update Tracker
+
+File: `Aryabangi_Motors_Daily_Project_Update_Tracker (1).xlsx`  
+Sheet: `Daily Work Log`
+
+## When to update
+
+- At the end of a working session, or when the user asks to update the tracker / log today’s work.
+- Do this **every working day** there was project progress — same habit as prior days (e.g. 16–17 Nov entries).
+- If the user is mid-task and did not ask, do not interrupt; update when they wrap up or ask.
+
+## How to write the row
+
+Match the existing columns and tone of prior rows (especially the latest dated entry):
+
+| Column | Content |
+|--------|---------|
+| Date | Today’s date |
+| Day | Leave the existing `=IF(A…,"",TEXT(A…,"dddd"))` formula |
+| Work ID | Next integer (or reuse same ID if continuing one open thread) |
+| Module / Area | Short theme for the day’s work |
+| Task / Requirement | One-line goal |
+| Work Done by Me | Short numbered bullets only — one line each, no long explanation |
+| Result / Output | What works / was measured / delivered |
+| Status | Usually `In Progress` until client closes items; use dropdown values |
+| Pending From Client | `yes` / `no` as appropriate |
+| Additional Notes | Open client questions, caveats |
+
+Do not invent client messages/replies. Leave those blank unless they happened.
+
+## After writing
+
+- Save the xlsx in place (same filename).
+- Briefly tell the user the row date/Work ID was added.
+- Prefer editing via openpyxl (or equivalent) so formulas and other sheets stay intact.
