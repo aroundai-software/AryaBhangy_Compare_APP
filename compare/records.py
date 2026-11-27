@@ -28,6 +28,7 @@ class Record:
     items: str = ""
     ledgers: str = ""
     ledamts: str = ""
+    sheet_row_id: int = 0
 
 
 @dataclass
@@ -66,6 +67,7 @@ class Outcome:
     sheet_total: str = ""
     sheet_vas: str = ""
     sheet_when: str = ""
+    sheet_row_id: int = 0
     details: list = field(default_factory=list)
 
 

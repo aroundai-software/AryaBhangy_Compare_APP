@@ -75,7 +75,7 @@ class WorkerProtocolTests(unittest.TestCase):
     def test_compare_run_emits_result(self):
         fake = FakeIO(
             [
-                '{"cmd":"compare.run","from":"2026-11-16","to":"2026-11-16","branch":"Aluva"}',
+                '{"cmd":"compare.run","from":"2026-11-16","to":"2026-11-16","branch":"Aluva","voucher_types":["Hirise Invoice Service","SERVICE BILL -GST"]}',
                 '{"cmd":"shutdown"}',
             ]
         )
@@ -129,6 +129,21 @@ class WorkerProtocolTests(unittest.TestCase):
         self.assertEqual(payload["removed"], 0)
         self.assertEqual(payload["branch"], "Aluva")
         self.assertEqual(payload["rows"][0]["mark"], ADDED)
+
+    def test_compare_refuses_until_voucher_types_are_saved(self):
+        fake = FakeIO(
+            [
+                '{"cmd":"compare.run","from":"2026-11-16","to":"2026-11-16","branch":"Aluva"}',
+                '{"cmd":"shutdown"}',
+            ]
+        )
+        worker = Worker(stdin=fake.stdin, stdout=fake.stdout)
+        with mock.patch.object(worker, "_watch_tally", lambda: None):
+            worker.run()
+        errors = [event for event in fake.events() if event["event"] == "error"]
+        self.assertEqual(len(errors), 1)
+        self.assertIn("Settings", errors[0]["message"])
+        self.assertFalse(any(event["event"] == "compare.result" for event in fake.events()))
 
     def test_outcome_row_shape(self):
         outcome = Outcome(

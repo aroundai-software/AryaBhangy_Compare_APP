@@ -6,6 +6,24 @@ import 'package:path/path.dart' as p;
 
 typedef WorkerEventHandler = void Function(Map<String, dynamic> event);
 
+/// Python shipped beside an installed app: `<install>\runtime\python.exe`.
+String? bundledPythonPath(String installDir) {
+  final candidate = File(p.join(installDir, 'runtime', 'python.exe'));
+  if (candidate.existsSync()) {
+    return candidate.path;
+  }
+  return null;
+}
+
+/// Compare package shipped beside an installed app.
+String? bundledProjectRoot(String installDir) {
+  final worker = File(p.join(installDir, 'compare', 'worker.py'));
+  if (worker.existsSync()) {
+    return installDir;
+  }
+  return null;
+}
+
 class PythonBridge {
   Process? _process;
   StreamSubscription<String>? _stdoutSub;
@@ -18,19 +36,25 @@ class PythonBridge {
     if (_process != null) {
       return;
     }
-    final python = _pythonExecutable();
-    final root = _projectRoot();
+    final installDir = p.dirname(Platform.resolvedExecutable);
+    final bundledPython = bundledPythonPath(installDir);
+    final python = _pythonExecutable(installDir);
+    final root = _projectRoot(installDir);
+    final environment = <String, String>{
+      ...Platform.environment,
+      'PYTHONUNBUFFERED': '1',
+      'PYTHONIOENCODING': 'utf-8',
+    };
+    if (bundledPython != null && p.equals(python, bundledPython)) {
+      environment['PYTHONNOUSERSITE'] = '1';
+    }
     final process = await Process.start(
       python,
       const ['-m', 'compare.worker'],
       workingDirectory: root,
       mode: ProcessStartMode.normal,
       runInShell: false,
-      environment: {
-        ...Platform.environment,
-        'PYTHONUNBUFFERED': '1',
-        'PYTHONIOENCODING': 'utf-8',
-      },
+      environment: environment,
     );
     _process = process;
     _stdoutSub = process.stdout
@@ -97,18 +121,26 @@ class PythonBridge {
     }
   }
 
-  String _pythonExecutable() {
+  String _pythonExecutable(String installDir) {
     final override = Platform.environment['ARYABHANGY_PYTHON'];
     if (override != null && override.trim().isNotEmpty) {
       return override.trim();
     }
+    final bundled = bundledPythonPath(installDir);
+    if (bundled != null) {
+      return bundled;
+    }
     return Platform.isWindows ? 'python' : 'python3';
   }
 
-  String _projectRoot() {
+  String _projectRoot(String installDir) {
     final override = Platform.environment['ARYABHANGY_ROOT'];
     if (override != null && override.trim().isNotEmpty) {
       return override.trim();
+    }
+    final bundled = bundledProjectRoot(installDir);
+    if (bundled != null) {
+      return bundled;
     }
     final script = Platform.script.toFilePath();
     var dir = Directory(p.dirname(script));

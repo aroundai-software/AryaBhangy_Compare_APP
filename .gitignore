@@ -18,3 +18,11 @@ venv/
 .dart_tool/
 build/
 *.iml
+
+# Setup installer output and the downloaded Python runtime
+dist/
+installer/cache/
+
+
+
+logo-options/

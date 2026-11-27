@@ -73,6 +73,10 @@ class NormalizeTests(unittest.TestCase):
         self.assertEqual(vehicle_in_text("KA 19 H J 0759"), "KA19HJ0759")
         self.assertEqual(vehicle_in_text("KL 07 D G 8234"), "KL07DG8234")
         self.assertEqual(vehicle_in_text("KA-19-HJ-0759"), "KA19HJ0759")
+        # Tally party ledgers use a semicolon or colon before the plate.
+        self.assertEqual(vehicle_in_text("MANAGING PARTNER - KL; 42Z 3312"), "KL42Z3312")
+        self.assertEqual(vehicle_in_text("MANAGING PARTNER - KL: 42Z 3312"), "KL42Z3312")
+        self.assertEqual(vehicle_cell("MANAGING PARTNER - KL; 42Z 3312"), "KL42Z3312")
         # Must not keep party name stuck to the reg.
         self.assertEqual(vehicle_cell("RAINAKA19HJ0759"), "KA19HJ0759")
         self.assertNotEqual(vehicle_cell("RAINA - KA 19 H J 0759"), "RAINAKA19HJ0759")
@@ -116,13 +120,61 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(result.count(REMOVED), 1)
         self.assertEqual(result.count(ADDED), 0)
 
-    def test_different_bill_numbers_are_not_changed(self):
+    def test_one_different_column_is_added_and_the_same_columns_are_no_change(self):
+        same = compare(
+            [record(bill="6400", labour="259.60", spares="1,293.83", amount="1,553.43", vas="RSA, Chain Lube", items="ENGINE OIL\nO RING")],
+            [record(source="tally", bill="KL10000126006400", labour="259.60", spares="1293.83", amount="1553.43", vas="CHAIN LUBE, RSA", items="O RING\nENGINE OIL")],
+        )
+        self.assertEqual(same.count(KEEP), 1)
+        changed = compare(
+            [record(bill="6400", labour="259.60", spares="1,293.83", amount="1,553.43", vas="RSA", items="ENGINE OIL")],
+            [record(source="tally", bill="KL10000126006400", labour="259.60", spares="1,293.83", amount="1,553.43", vas="RSA", items="ENGINE OIL\nO RING")],
+        )
+        self.assertEqual(changed.count(ADDED), 1)
+        self.assertIn("Items differs", changed.outcomes[0].reason)
+
+    def test_items_saved_on_the_tracksheet_are_read_back(self):
+        from compare.tracksheet_site import _record
+
+        saved = _record(
+            {
+                "JC Number": "006719",
+                "Date": "2026-10-26",
+                "Registration": "TN99Q1580",
+                "Bill Number": "5973",
+                "Labour": 3341,
+                "Spares": 2681.08,
+                "Bill Amount": 6784.74,
+                "VAS Canvassed": [{"id": 1, "value": "Silencer Coating"}],
+                "Items": "SCOOTER OIL\nWASHER,12MM DRAIN 9410912000",
+            },
+            1,
+        )
+        self.assertEqual(saved.items, "SCOOTER OIL\nWASHER,12MM DRAIN 9410912000")
+        tally = record(
+            source="tally",
+            job_card="006719",
+            vehicle="TN99Q1580",
+            on=date(2026, 10, 27),
+            bill="KL10000126005973",
+            labour="3,341",
+            spares="2,681.08",
+            amount="6,784.74",
+            vas="Silencer Coating",
+            items="WASHER,12MM DRAIN 9410912000\nSCOOTER OIL",
+        )
+        result = compare([saved], [tally])
+        self.assertEqual(result.count(KEEP), 1)
+        self.assertEqual(result.count(ADDED), 0)
+
+    def test_different_bill_numbers_are_added(self):
         track = [record(bill="2419")]
         tally = [record(source="tally", bill="HO/SS1690/26-27")]
         result = compare(track, tally)
-        self.assertEqual(result.count(CHECK), 1)
-        self.assertEqual(result.count(ADDED), 0)
+        self.assertEqual(result.count(ADDED), 1)
+        self.assertEqual(result.count(CHECK), 0)
         self.assertEqual(result.count(REMOVED), 0)
+        self.assertIn("Bill #", result.outcomes[0].reason)
 
     def test_same_bill_is_kept(self):
         track = [record(bill="HO/SS1690/26-27")]
@@ -137,9 +189,9 @@ class EngineTests(unittest.TestCase):
         track = [record(bill="6515")]
         tally = [record(source="tally", bill="KL10000126006515", amount="2,500")]
         result = compare(track, tally)
-        self.assertEqual(result.count(KEEP), 1)
+        self.assertEqual(result.count(ADDED), 1)
         self.assertEqual(result.count(CHECK), 0)
-        self.assertEqual(result.count_category(BOTH_MATCH), 1)
+        self.assertEqual(result.count_category(NOT_MATCHING), 1)
 
     def test_bill_match_missing_vas_is_added(self):
         track = [record(bill="6400", vas="Chain Lube", labour="259", spares="1293")]
@@ -154,7 +206,7 @@ class EngineTests(unittest.TestCase):
         ]
         result = compare(track, tally)
         self.assertEqual(result.count(ADDED), 1)
-        self.assertIn("RSA", result.outcomes[0].reason)
+        self.assertIn("RSA", result.outcomes[0].vas)
 
     def test_bill_match_extra_tracksheet_vas_is_ignored_for_now(self):
         track = [record(bill="6400", vas="Chain Lube, RSA", labour="259.60", spares="1,293.83")]
@@ -168,9 +220,9 @@ class EngineTests(unittest.TestCase):
             )
         ]
         result = compare(track, tally)
-        self.assertEqual(result.count(KEEP), 1)
-        self.assertEqual(result.count(ADDED), 0)
+        self.assertEqual(result.count(ADDED), 1)
         self.assertEqual(result.count(CHECK), 0)
+        self.assertIn("CHAIN LUBRICATION", result.outcomes[0].vas.upper())
 
     def test_bill_totals_match_keeps_despite_labour_spares_split(self):
         # Same full bill (~1412 vs ~1413), different L/S packaging (e.g. Chain Lube in labour).
@@ -185,9 +237,64 @@ class EngineTests(unittest.TestCase):
             )
         ]
         result = compare(track, tally)
-        self.assertEqual(result.count(KEEP), 1)
+        self.assertEqual(result.count(ADDED), 1)
         self.assertEqual(result.count(CHECK), 0)
-        self.assertIn("bill totals match", result.outcomes[0].reason.lower())
+        self.assertIn("Ready to fill", result.outcomes[0].reason)
+
+    def test_rerun_after_write_is_no_change(self):
+        # Write stored pretax labour and spares, and the with-GST total in Bill Amount.
+        track = [
+            record(
+                job_card="005721",
+                bill="5241",
+                labour="600",
+                spares="1,400.70",
+                amount="2,360.82",
+            )
+        ]
+        tally = [
+            record(
+                source="tally",
+                job_card="005721",
+                bill="KL10000125005241",
+                amount="2,360.82",
+                voucher_type="Hirise Invoice Service",
+                ledgers="CUSTOMER - KL 63L 4643, SERVICE-GST, LABOUR CHARGE, Output-SGST 9%, Output-CGST 9%",
+                ledamts="2360.82, 1400.70, 600, 180.06, 180.06",
+            )
+        ]
+        result = compare(track, tally)
+        self.assertEqual(result.count(KEEP), 1)
+        self.assertEqual(result.count(ADDED), 0)
+        self.assertEqual(result.outcomes[0].sheet_total, "2,360.82")
+        self.assertEqual(result.outcomes[0].amount, "2,360.82")
+
+    def test_parts_only_rerun_after_write_is_no_change(self):
+        track = [
+            record(
+                job_card="005905",
+                bill="5230",
+                labour="",
+                spares="723.06",
+                amount="853.21",
+            )
+        ]
+        tally = [
+            record(
+                source="tally",
+                job_card="005905",
+                bill="KL10000125005230",
+                amount="853.21",
+                voucher_type="Hirise Invoice Service",
+                ledgers="CUSTOMER - KL 63L 4643, SERVICE-GST, Output-SGST 9%, Output-CGST 9%",
+                ledamts="853.21, 723.06, 65.07, 65.08",
+            )
+        ]
+        result = compare(track, tally)
+        self.assertEqual(result.count(KEEP), 1)
+        self.assertEqual(result.count(ADDED), 0)
+        self.assertEqual(result.outcomes[0].sheet_total, "853.21")
+        self.assertEqual(result.outcomes[0].amount, "853.21")
 
     def test_bill_totals_differ_is_check(self):
         track = [record(bill="6400", labour="914", spares="498")]
@@ -200,8 +307,9 @@ class EngineTests(unittest.TestCase):
             )
         ]
         result = compare(track, tally)
-        self.assertEqual(result.count(CHECK), 1)
-        self.assertIn("totals differ", result.outcomes[0].reason)
+        self.assertEqual(result.count(ADDED), 1)
+        self.assertEqual(result.count(CHECK), 0)
+        self.assertIn("Ready to fill", result.outcomes[0].reason)
         row = result.outcomes[0]
         self.assertEqual(row.sheet_labour, "914")
         self.assertEqual(row.sheet_spares, "498")
@@ -227,7 +335,8 @@ class EngineTests(unittest.TestCase):
         track = [record(bill="2419")]
         tally = [record(source="tally", bill="HO/SS1690/26-27")]
         result = compare(track, tally)
-        self.assertEqual(result.count_category(ONE_MATCH), 1)
+        self.assertEqual(result.count(ADDED), 1)
+        self.assertEqual(result.count_category(NOT_MATCHING), 1)
 
         only_tally = compare([], [record(source="tally", bill="KL10000126006234")])
         self.assertEqual(only_tally.count_category(NOT_MATCHING), 1)
@@ -280,7 +389,7 @@ class EngineTests(unittest.TestCase):
             )
         ]
         result = compare(track, tally)
-        self.assertEqual(result.count(KEEP), 1)
+        self.assertEqual(result.count(ADDED), 1)
         self.assertEqual(result.count(CHECK), 0)
         self.assertEqual(result.outcomes[0].vehicle, "KL41T0914")
         self.assertIn("only Tracksheet row", result.outcomes[0].reason)
@@ -456,7 +565,7 @@ class EngineTests(unittest.TestCase):
         )
         result = compare(track, [hirise, service])
         row = next(outcome for outcome in result.outcomes if outcome.job_card == "007362")
-        self.assertEqual(row.mark, KEEP)
+        self.assertEqual(row.mark, ADDED)
         self.assertEqual(row.track_bill, "6526")
         self.assertEqual(row.labour, "3,366")
         self.assertEqual(row.spares, "3,622.94")
@@ -465,6 +574,54 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(row.items, "O RING DS-5058")
         self.assertIn("Nothing is written until you press Write", row.reason)
         self.assertIn("before GST", row.reason)
+
+    def test_tamil_nadu_party_total_is_not_added_to_labour(self):
+        day = date(2026, 10, 27)
+        track = [
+            record(
+                job_card="006719",
+                vehicle="TN99Q1580",
+                customer="KANNAN V",
+                on=date(2026, 10, 26),
+                bill="",
+                labour="",
+                spares="",
+            )
+        ]
+        hirise = record(
+            source="tally",
+            job_card="006719",
+            vehicle="TN99Q1580",
+            customer="KANNAN",
+            on=day,
+            bill="KL10000126005973",
+            amount="5,340.74",
+            voucher_type="Hirise Invoice Service",
+            ledgers=(
+                "KANNAN-TN 99 Q 1580, SERVICE-GST, LABOUR CHARGE, Paid Service, "
+                "Output-SGST 9%, Output-CGST 9%, Output-SGST 9%-Labour, Output-CGST 9%-Labour"
+            ),
+            ledamts="5340.74, 2681.08, 1845, 0, 241.28, 241.28, 166.05, 166.05",
+        )
+        service = record(
+            source="tally",
+            job_card="",
+            vehicle="TN99Q1580",
+            customer="KANNAN",
+            on=day,
+            bill="HO/SS1636/26-27",
+            amount="1444",
+            voucher_type="SERVICE BILL -GST",
+            ledgers="KANNAN-TN 99 Q 1580, Silencer Coating, TEFLON COATING, CGST, SGST",
+            ledamts="1444, 700, 524.40, 109.80, 109.80",
+        )
+        result = compare(track, [hirise, service])
+        row = next(outcome for outcome in result.outcomes if outcome.job_card == "006719")
+        self.assertEqual(row.labour, "3,069.40")
+        self.assertEqual(row.spares, "2,681.08")
+        self.assertEqual(row.amount, "6,784.74")
+        self.assertEqual(row.vas, "Silencer Coating, TEFLON COATING")
+        self.assertNotIn("KANNAN", row.vas)
 
     def test_service_bills_on_different_days_stay_on_their_own_job(self):
         first = date(2026, 11, 9)
@@ -668,7 +825,51 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(row.spares, "13,510.93")
         self.assertEqual(row.amount, "22,008.10")
         self.assertEqual(row.vas, "AMC(SERVICE)")
-        self.assertEqual(row.mark, KEEP)
+        self.assertEqual(row.mark, ADDED)
+
+    def test_a_saved_extra_voucher_type_joins_as_a_service_bill(self):
+        day = date(2026, 10, 3)
+        track = [
+            record(
+                job_card="002232",
+                vehicle="KL63L7316",
+                customer="ANU MATHEW",
+                on=day,
+                bill="",
+            )
+        ]
+        hirise = record(
+            source="tally",
+            job_card="002232",
+            vehicle="KL63L7316",
+            customer="ANU",
+            on=day,
+            bill="KL10BB01260002002",
+            amount="609.13",
+            voucher_type="Hirise Invoice Service",
+            ledgers="ANU-KL 63 L 7316, SERVICE-GST",
+            ledamts="609.13, 516.21",
+        )
+        extra = record(
+            source="tally",
+            vehicle="KL63L7316",
+            customer="ANU",
+            on=day,
+            bill="AG/L/449/26-27",
+            amount="800",
+            voucher_type="SERVICE BILL (NEW)",
+            ledgers="ANU-KL 63 L 7316, ANTI RUST COTTING, CGST, SGST",
+            ledamts="800, 677.97, 61.02, 61.01",
+        )
+        left_out = compare(track, [hirise, extra])
+        alone = next(row for row in left_out.outcomes if row.job_card == "002232")
+        self.assertEqual(alone.amount, "609.13")
+        joined = compare(track, [hirise, extra], service_types=["SERVICE BILL (NEW)"])
+        row = next(item for item in joined.outcomes if item.job_card == "002232")
+        self.assertEqual(row.spares, "516.21")
+        self.assertEqual(row.labour, "677.97")
+        self.assertEqual(row.amount, "1,409.13")
+        self.assertEqual(row.vas, "ANTI RUST COTTING")
 
     def test_cancelled_hirise_bill_is_dropped_and_the_new_bill_is_kept(self):
         text = """<BILLS>

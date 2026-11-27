@@ -1,8 +1,8 @@
-"""Read job cards from the Aryabhangy tracksheet site.
+"""Read and update job cards on the Aryabhangy tracksheet site.
 
-Reads are GET only. The one write path updates Bill, Labour, Spares, Total,
-VAS, and Items on a practice copy running on this computer. The live site is never
-written. The access token stays on the site and is not written into this project.
+The website address chooses the site. The hosted demo uses its own save.
+The original Tracksheet updates table 561 when LIVE_WRITE_TOKEN is set.
+That token stays empty until it is placed here. Do not commit a real token.
 """
 
 import json
@@ -19,8 +19,14 @@ from compare.records import Record
 
 LIVE_SITE = "https://track.aryabhangymotors.com"
 LIVE_DATABASE = "https://tracksheet.aryabhangymotors.com"
+DEMO_TOKEN = "local-trackdemo-token"
+# Paste the original Tracksheet update token here when it is available.
+LIVE_WRITE_TOKEN = ""
+LIVE_HOSTS = frozenset({"track.aryabhangymotors.com", "tracksheet.aryabhangymotors.com"})
+LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost"})
 SITE = LIVE_SITE
 DATABASE = LIVE_DATABASE
+_demo_confirmed = False
 TABLE_ID = 561
 DATE_FIELD = 5256
 JC_FIELD = 5253
@@ -38,32 +44,100 @@ class SiteError(RuntimeError):
 def apply_website(website):
     """Point later Tracksheet reads at this address.
 
-    A practice copy on this computer serves both the page and the job cards.
-    The live site keeps its separate job-card address.
+    The hosted demo serves its own job cards. The original Tracksheet keeps
+    its database address. An address on this computer is not a Tracksheet.
     """
-    global SITE, DATABASE
+    global SITE, DATABASE, _demo_confirmed
     origin = _origin(website)
     SITE = origin
-    if is_practice_site(origin):
+    _demo_confirmed = False
+    if _is_live_host(origin):
+        SITE = LIVE_SITE
+        DATABASE = LIVE_DATABASE
+    elif _is_local_host(origin):
         DATABASE = origin
     else:
         DATABASE = LIVE_DATABASE
     return origin
 
 
+def confirm_site(timeout=8):
+    """True when Write may save on the website that is selected."""
+    global DATABASE, _demo_confirmed
+    _demo_confirmed = False
+    if _is_local_host(SITE):
+        return False
+    if _is_live_host(SITE):
+        DATABASE = LIVE_DATABASE
+        return _original_write_ready()
+    try:
+        token = _token(timeout, attempts=1)
+    except SiteError:
+        DATABASE = SITE
+        return False
+    if token == DEMO_TOKEN and not _is_live_host(SITE):
+        DATABASE = SITE
+        _demo_confirmed = True
+        return True
+    DATABASE = LIVE_DATABASE
+    return False
+
+
+def can_save_site():
+    """True for the hosted demo, or the original site when its token is set."""
+    if _is_local_host(SITE):
+        return False
+    if _is_live_host(SITE):
+        return _original_write_ready()
+    return _demo_confirmed
+
+
+def save_blocked_reason():
+    if _is_local_host(SITE):
+        return "Use the demo Tracksheet or the original Tracksheet address."
+    if _is_live_host(SITE):
+        return "Write stays off for the original Tracksheet until the update token is in the app."
+    return "Saving is only allowed on the hosted demo or the original Tracksheet."
+
+
 def is_practice_site(website=None):
     origin = _origin(website) if website else SITE
-    host = (urllib.parse.urlparse(origin).hostname or "").lower()
-    return host in {"127.0.0.1", "localhost"}
+    return _is_local_host(origin)
+
+
+def _original_write_ready():
+    return bool(str(LIVE_WRITE_TOKEN).strip())
+
+
+def _is_live_host(website):
+    return _host(website) in LIVE_HOSTS
+
+
+def _is_local_host(website):
+    return _host(website) in LOCAL_HOSTS
+
+
+def _refuse_local():
+    if _is_local_host(SITE):
+        raise SiteError(save_blocked_reason())
+
+
+def _host(website):
+    return (urllib.parse.urlparse(website).hostname or "").lower()
 
 
 def write_practice_cards(cards, timeout=60):
-    """Save the compare fields onto the practice copy. Refuses the live site."""
-    if not is_practice_site():
-        raise SiteError("Writing is only allowed on the Tracksheet on this computer.")
+    """Save Bill #, Labour, Spares, Total, VAS, and Items on the selected site."""
+    if _is_local_host(SITE):
+        raise SiteError(save_blocked_reason())
+    if _is_live_host(SITE):
+        return _write_original_cards(cards, timeout)
+    if not can_save_site() or _is_live_host(DATABASE):
+        raise SiteError(save_blocked_reason())
+    target = SITE.rstrip("/")
     payload = json.dumps({"cards": cards}, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
-        DATABASE.rstrip("/") + "/api/local/fill",
+        target + "/api/local/fill",
         data=payload,
         headers={
             "Content-Type": "application/json",
@@ -96,8 +170,83 @@ def write_practice_cards(cards, timeout=60):
     return body
 
 
+def _write_original_cards(cards, timeout):
+    """Update the read row on the original Tracksheet table."""
+    if not _original_write_ready():
+        raise SiteError(save_blocked_reason())
+    results = []
+    updated = 0
+    for card in cards or []:
+        job = str(card.get("job_card") or "")
+        key = str(card.get("key") or job)
+        try:
+            row_id = int(card.get("sheet_row_id") or 0)
+        except (TypeError, ValueError):
+            row_id = 0
+        if row_id <= 0:
+            results.append(
+                {
+                    "ok": False,
+                    "key": key,
+                    "job_card": job,
+                    "error": "This job card has no row to update.",
+                }
+            )
+            continue
+        payload = json.dumps(
+            {
+                "Bill Number": card.get("bill") or "",
+                "Labour": card.get("labour") or "",
+                "Spares": card.get("spares") or "",
+                "Bill Amount": card.get("total") or "",
+                "VAS Canvassed": card.get("vas") or "",
+                "Items": card.get("items") or "",
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            f"{DATABASE.rstrip('/')}/api/database/rows/table/{TABLE_ID}/{row_id}/?user_field_names=true",
+            data=payload,
+            headers={
+                "Authorization": "Token " + str(LIVE_WRITE_TOKEN).strip(),
+                "Content-Type": "application/json",
+                "User-Agent": "AryabhangyCompare",
+            },
+            method="PATCH",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                response.read()
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode("utf-8", "replace").strip()
+            results.append(
+                {
+                    "ok": False,
+                    "key": key,
+                    "job_card": job,
+                    "error": detail or "The original Tracksheet refused the update.",
+                }
+            )
+            continue
+        except Exception:
+            results.append(
+                {
+                    "ok": False,
+                    "key": key,
+                    "job_card": job,
+                    "error": "The original Tracksheet did not answer.",
+                }
+            )
+            continue
+        updated += 1
+        results.append({"ok": True, "key": key, "job_card": job})
+    return {"updated": updated, "results": results}
+
+
 def probe_website(timeout=8):
     """True when the chosen website returns its Tracksheet config. Read-only."""
+    if _is_local_host(SITE):
+        return False, save_blocked_reason()
     request = urllib.request.Request(
         SITE + "/config.js",
         headers={"User-Agent": "AryabhangyCompare"},
@@ -106,10 +255,10 @@ def probe_website(timeout=8):
         with urllib.request.urlopen(request, timeout=timeout) as response:
             text = response.read().decode("utf-8", "replace")
     except Exception:
-        return False, "The website did not answer."
+        return False, "Unable to reach the Tracksheet website."
     if "TRACKSHEET_TOKEN" not in text:
-        return False, "The website answered, but it is not the Tracksheet."
-    return True, "The website answered."
+        return False, "The website is reachable, but it is not a Tracksheet."
+    return True, "Tracksheet website is reachable."
 
 
 def _origin(website):
@@ -122,6 +271,7 @@ def _origin(website):
 
 def branch_names(timeout=30):
     """Branch names from the tracksheet Branch field. Read-only."""
+    _refuse_local()
     token = _token(timeout)
     data = _get(f"/api/database/fields/table/{TABLE_ID}/", token, timeout)
     if not isinstance(data, list):
@@ -141,6 +291,7 @@ def branch_names(timeout=30):
 
 
 def job_cards(start, end, timeout=30, progress=None):
+    _refuse_local()
     if start is None or end is None:
         raise SiteError("Choose a From date and a To date.")
     if end < start:
@@ -182,6 +333,7 @@ def job_cards_by_numbers(numbers, timeout=30, progress=None):
     Used when a Hirise bill falls in From–To but the Job Card Date is outside
     that window (open-date vs bill-date).
     """
+    _refuse_local()
     wanted = []
     seen = set()
     for value in numbers or []:
@@ -334,12 +486,36 @@ def _record(row, number):
         spares=format_amount(row.get("Spares")),
         vas=_multi(row.get("VAS Canvassed")),
         payment=_choice(row.get("Payment Mode")),
+        items=_items(row.get("Items")),
+        sheet_row_id=_row_id(row),
     )
+
+
+def _row_id(row):
+    try:
+        return int(row.get("id") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _choice(value):
     if isinstance(value, dict):
         return as_text(value.get("value"))
+    return as_text(value)
+
+
+def _items(value):
+    """Item names as stored. Newlines stay so a comma inside a name is one item."""
+    if isinstance(value, list):
+        lines = []
+        for item in value:
+            if isinstance(item, dict):
+                text = as_text(item.get("value"))
+            else:
+                text = as_text(item)
+            if text and text not in lines:
+                lines.append(text)
+        return "\n".join(lines)
     return as_text(value)
 
 

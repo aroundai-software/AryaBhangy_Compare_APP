@@ -331,9 +331,7 @@ class _HistoryPageState extends State<HistoryPage> {
         isWritten: (row) => widget.controller.wasWritten(row, runId: _selectedId),
         writeNote: widget.controller.writeStatus.isNotEmpty
             ? widget.controller.writeStatus
-            : (!widget.controller.practiceSite || !widget.controller.allowPracticeSave)
-                ? 'Turn on Allow saving on the Tracksheet in Settings before writing.'
-                : '',
+            : widget.controller.writeBlockedNote,
         onWriteAll: () {
           final detail = _detail;
           if (detail != null) {
@@ -371,11 +369,6 @@ class _HistoryPageState extends State<HistoryPage> {
                           fontWeight: FontWeight.w700,
                           color: tsInk,
                         ),
-                      ),
-                      SizedBox(height: 4),
-                      Text(
-                        'Saved on this PC. Site not changed.',
-                        style: TextStyle(color: tsMuted, fontSize: 13),
                       ),
                     ],
                   ),
@@ -636,7 +629,7 @@ class _Labeled extends StatelessWidget {
   }
 }
 
-class _HistoryTable extends StatelessWidget {
+class _HistoryTable extends StatefulWidget {
   const _HistoryTable({
     required this.items,
     required this.savedLabel,
@@ -650,6 +643,21 @@ class _HistoryTable extends StatelessWidget {
   final ValueChanged<HistoryRunSummary> onOpen;
 
   @override
+  State<_HistoryTable> createState() => _HistoryTableState();
+}
+
+class _HistoryTableState extends State<_HistoryTable> {
+  final ScrollController _horizontal = ScrollController();
+  final ScrollController _vertical = ScrollController();
+
+  @override
+  void dispose() {
+    _horizontal.dispose();
+    _vertical.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Container(
       decoration: BoxDecoration(
@@ -657,58 +665,78 @@ class _HistoryTable extends StatelessWidget {
         borderRadius: BorderRadius.circular(14),
         border: Border.all(color: tsLine),
       ),
-      child: SingleChildScrollView(
-        child: SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: DataTable(
-            showCheckboxColumn: false,
-            headingRowColor: const WidgetStatePropertyAll(tsGreen),
-            headingTextStyle: const TextStyle(
-              color: tsWhite,
-              fontSize: 12,
-              fontWeight: FontWeight.w700,
-            ),
-            columns: const [
-              DataColumn(label: Text('Run date')),
-              DataColumn(label: Text('Branch and company')),
-              DataColumn(label: Text('Period')),
-              DataColumn(label: Text('Added'), numeric: true),
-              DataColumn(label: Text('Check manually'), numeric: true),
-              DataColumn(label: Text('Removed'), numeric: true),
-              DataColumn(label: Text('No change'), numeric: true),
-              DataColumn(label: Text('Rows'), numeric: true),
-              DataColumn(label: Text('')),
-            ],
-            rows: [
-              for (final item in items)
-                DataRow(
-                  onSelectChanged: (_) => onOpen(item),
-                  cells: [
-                    DataCell(Text(savedLabel(item))),
-                    DataCell(
-                      Text(
-                        item.company.isEmpty
-                            ? (item.branch.isEmpty ? '—' : item.branch)
-                            : '${item.branch}  ·  ${item.company}',
+      clipBehavior: Clip.antiAlias,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          return Scrollbar(
+            controller: _horizontal,
+            thumbVisibility: true,
+            scrollbarOrientation: ScrollbarOrientation.bottom,
+            child: SingleChildScrollView(
+              controller: _horizontal,
+              scrollDirection: Axis.horizontal,
+              child: SizedBox(
+                height: constraints.maxHeight,
+                child: Scrollbar(
+                  controller: _vertical,
+                  thumbVisibility: true,
+                  child: SingleChildScrollView(
+                    controller: _vertical,
+                    primary: false,
+                    child: DataTable(
+                      showCheckboxColumn: false,
+                      headingRowColor: const WidgetStatePropertyAll(tsGreen),
+                      headingTextStyle: const TextStyle(
+                        color: tsWhite,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
                       ),
+                      columns: const [
+                        DataColumn(label: Text('Run date')),
+                        DataColumn(label: Text('Branch and company')),
+                        DataColumn(label: Text('Period')),
+                        DataColumn(label: Text('Added'), numeric: true),
+                        DataColumn(label: Text('Check manually'), numeric: true),
+                        DataColumn(label: Text('Removed'), numeric: true),
+                        DataColumn(label: Text('No change'), numeric: true),
+                        DataColumn(label: Text('Rows'), numeric: true),
+                        DataColumn(label: Text('')),
+                      ],
+                      rows: [
+                        for (final item in widget.items)
+                          DataRow(
+                            onSelectChanged: (_) => widget.onOpen(item),
+                            cells: [
+                              DataCell(Text(widget.savedLabel(item))),
+                              DataCell(
+                                Text(
+                                  item.company.isEmpty
+                                      ? (item.branch.isEmpty ? '—' : item.branch)
+                                      : '${item.branch}  ·  ${item.company}',
+                                ),
+                              ),
+                              DataCell(Text(widget.rangeLabel(item))),
+                              DataCell(Text('${item.added}')),
+                              DataCell(Text('${item.check}')),
+                              DataCell(Text('${item.removed}')),
+                              DataCell(Text('${item.keep}')),
+                              DataCell(Text('${item.rowCount}')),
+                              DataCell(
+                                TextButton(
+                                  onPressed: () => widget.onOpen(item),
+                                  child: const Text('Open'),
+                                ),
+                              ),
+                            ],
+                          ),
+                      ],
                     ),
-                    DataCell(Text(rangeLabel(item))),
-                    DataCell(Text('${item.added}')),
-                    DataCell(Text('${item.check}')),
-                    DataCell(Text('${item.removed}')),
-                    DataCell(Text('${item.keep}')),
-                    DataCell(Text('${item.rowCount}')),
-                    DataCell(
-                      TextButton(
-                        onPressed: () => onOpen(item),
-                        child: const Text('Open'),
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
-            ],
-          ),
-        ),
+              ),
+            ),
+          );
+        },
       ),
     );
   }

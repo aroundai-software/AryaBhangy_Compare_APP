@@ -11,11 +11,16 @@ class AppSettings {
     required this.tallyPort,
     required this.website,
     required this.allowPracticeSave,
+    this.voucherTypesByCompany = const <String, List<String>>{},
   });
 
   final String tallyPort;
   final String website;
   final bool allowPracticeSave;
+
+  /// Saved voucher types keyed by the exact Tally company name.
+  /// A missing company means the user has not saved a choice yet.
+  final Map<String, List<String>> voucherTypesByCompany;
 
   static const current = AppSettings(
     tallyPort: defaultTallyPort,
@@ -53,6 +58,7 @@ class SettingsStore {
         tallyPort: port.isEmpty ? defaultTallyPort : port,
         website: website,
         allowPracticeSave: raw['allowPracticeSave'] == true,
+        voucherTypesByCompany: _voucherTypes(raw['voucherTypesByCompany']),
       );
     } catch (_) {
       return AppSettings.current;
@@ -66,8 +72,31 @@ class SettingsStore {
         'tallyPort': settings.tallyPort,
         'website': settings.website,
         'allowPracticeSave': settings.allowPracticeSave,
+        'voucherTypesByCompany': settings.voucherTypesByCompany,
       }),
       flush: true,
     );
   }
+}
+
+Map<String, List<String>> _voucherTypes(Object? raw) {
+  if (raw is! Map) {
+    return const {};
+  }
+  final types = <String, List<String>>{};
+  for (final entry in raw.entries) {
+    final company = entry.key.toString().trim();
+    if (company.isEmpty || entry.value is! List) {
+      continue;
+    }
+    final names = <String>[];
+    for (final item in entry.value as List) {
+      final name = item.toString().trim();
+      if (name.isNotEmpty && !names.contains(name)) {
+        names.add(name);
+      }
+    }
+    types[company] = names;
+  }
+  return types;
 }

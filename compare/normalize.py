@@ -3,9 +3,9 @@ from datetime import date, datetime
 
 _ORDER_JC = re.compile(r"JC(?:-[A-Z0-9]+)*-(\d{6})\b", re.IGNORECASE)
 _LEADING_REFERENCE = re.compile(r"^\s*(\d{1,6})\s*/\s*(\d{2})\b")
-# Allow spaces/hyphens inside the letter series (Tally often writes "KA 19 H J 0759").
+# Allow spaces, hyphens, colons, and semicolons (Tally writes "KL; 42Z 3312" and "KA 19 H J 0759").
 _VEHICLE = re.compile(
-    r"\b([A-Z]{2})\s*-?\s*(\d{1,2})\s*-?\s*([A-Z](?:\s*-?\s*[A-Z]){0,2})\s*-?\s*(\d{1,4})\b",
+    r"\b([A-Z]{2})\s*[-:;]?\s*(\d{1,2})\s*[-:;]?\s*([A-Z](?:\s*[-:;]?\s*[A-Z]){0,2})\s*[-:;]?\s*(\d{1,4})\b",
     re.IGNORECASE,
 )
 _COMPACT_VEHICLE = re.compile(r"^[A-Z]{2}\d{1,2}[A-Z]{1,3}\d{1,4}$")

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from compare.normalize import as_text
+from compare.normalize import as_text, vehicle_cell, vehicle_in_text
 
 MONEY_TOLERANCE = 0.0  # exact L/S match (paise); no ₹1 slack
 TOTAL_TOLERANCE = 2.0  # bill total may differ by rounding / Adjust A/C
@@ -82,13 +82,36 @@ def totals_match(track_total, tally_total, tolerance=TOTAL_TOLERANCE) -> bool:
 
 
 def track_bill_total(record) -> float:
-    """Tracksheet total = Labour + Spares when present, else Bill Amount."""
+    """Bill total already stored on the Tracksheet.
+
+    Older rows store Labour and Spares with GST, so their sum is the bill.
+    A compare write stores those two before GST and the with-GST figure in
+    Bill Amount. Use Bill Amount when it is that larger total.
+    """
     labour_spares = parse_amount(getattr(record, "labour", "")) + parse_amount(
         getattr(record, "spares", "")
     )
+    bill_amount = round(parse_amount(getattr(record, "amount", "")), 2)
+    if _bill_amount_is_with_tax(bill_amount, labour_spares):
+        return bill_amount
     if labour_spares > 0:
         return round(labour_spares, 2)
-    return round(parse_amount(getattr(record, "amount", "")), 2)
+    return bill_amount
+
+
+def _bill_amount_is_with_tax(bill_amount, labour_spares) -> bool:
+    """True when Bill Amount is the with-GST total, not a rounding of Labour+Spares.
+
+    A gap over ₹2 is tax on a normal bill. On a small bill the GST itself can
+    be under ₹2 (spares 7.63, total 9), so a gap of about 5% or more counts too.
+    """
+    if bill_amount <= labour_spares:
+        return False
+    if bill_amount > labour_spares + TOTAL_TOLERANCE:
+        return True
+    if labour_spares <= 0:
+        return False
+    return bill_amount >= round(labour_spares * 1.05, 2)
 
 
 def tally_bill_total(rows) -> float:
@@ -196,17 +219,21 @@ def split_item_list(value) -> list:
 def split_name_list(value) -> list:
     """Split Tally FullList name lists (ledgers/VAS).
 
-    Prefer newlines. Else ``;`` / ``|``, else comma+space (ledger FullList).
+    Newlines are the stored form. A comma+space list is the Tally FullList.
+    Semicolon or pipe splits the list only when there is no comma: a party
+    ledger can contain a semicolon (``KL; 42Z 3312``).
     """
     text = as_text(value)
     if not text:
         return []
     if "\n" in text or "\r" in text:
         chunks = re.split(r"[\r\n]+", text)
+    elif re.search(r",\s+", text):
+        chunks = re.split(r",\s+", text)
     elif ";" in text or "|" in text:
         chunks = re.split(r"[;|]+", text)
     else:
-        chunks = re.split(r",\s+", text)
+        chunks = [text]
     return [" ".join(part.split()) for part in chunks if part.strip()]
 
 
@@ -256,10 +283,9 @@ def pair_ledgers(names_text, amounts_text) -> list:
 
 
 def party_voucher_total(ledgers_text, amounts_text) -> float:
-    """Party line with a vehicle token is usually the voucher grand total."""
+    """Party line with a vehicle number is usually the voucher grand total."""
     for name, amount in pair_ledgers(ledgers_text, amounts_text):
-        folded = " ".join(as_text(name).upper().split())
-        if re.search(r"\bKL\s?\d", folded) and amount > 0:
+        if _party_line(name) and amount > 0:
             return round(amount, 2)
     return 0.0
 
@@ -303,7 +329,8 @@ def _is_labour_charge(name) -> bool:
 
 
 def _party_line(name) -> bool:
-    return re.search(r"\bKL\s?\d", _folded_ledger(name)) is not None
+    """Customer ledger when the name contains a vehicle number, any state."""
+    return bool(vehicle_in_text(name) or vehicle_cell(name))
 
 
 def _is_named_party(name, party_name) -> bool:
@@ -410,8 +437,8 @@ def is_party_or_sales(name: str) -> bool:
         return True
     if any(skip in folded for skip in _SKIP_LEDGERS):
         return True
-    # Party lines usually contain a vehicle token or are the first receivable
-    if re.search(r"\bKL\s?\d", folded):
+    # Party lines usually contain a vehicle number, any state.
+    if _party_line(name):
         return True
     return False
 

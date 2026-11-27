@@ -6,6 +6,7 @@ from compare.money import (
     money_matches,
     split_amount_list,
     split_item_list,
+    split_name_list,
     tally_bill_total,
     totals_match,
     track_bill_total,
@@ -165,6 +166,95 @@ class MoneyTests(unittest.TestCase):
         self.assertEqual(tally_bill_total([tally]), 1413.48)
         self.assertTrue(totals_match(track_bill_total(track), tally_bill_total([tally])))
 
+    def test_written_card_uses_the_with_tax_bill_amount(self):
+        written = Record(
+            source="tracksheet",
+            branch="Aluva",
+            on=date(2026, 9, 24),
+            financial_year="2026-27",
+            job_card="005721",
+            vehicle="KL41W4558",
+            customer="Customer",
+            bill="5241",
+            amount="2,360.82",
+            voucher_type="",
+            status="Received",
+            service="PAID",
+            adviser="",
+            row_number=1,
+            labour="600",
+            spares="1,400.70",
+        )
+        self.assertEqual(track_bill_total(written), 2360.82)
+        self.assertTrue(totals_match(track_bill_total(written), 2360.82))
+
+    def test_small_bill_keeps_the_with_tax_total(self):
+        """GST under ₹2 must not be dropped (spares 7.63, bill total 9)."""
+        small = Record(
+            source="tracksheet",
+            branch="Aluva",
+            on=date(2026, 10, 27),
+            financial_year="2026-27",
+            job_card="006753",
+            vehicle="KL11BY5399",
+            customer="Customer",
+            bill="5979",
+            amount="9",
+            voucher_type="",
+            status="Received",
+            service="Paid",
+            adviser="",
+            row_number=1,
+            labour="",
+            spares="7.63",
+        )
+        self.assertEqual(track_bill_total(small), 9.0)
+        # A rupee of rounding on a large inclusive total stays with Labour+Spares.
+        rounded = Record(
+            source="tracksheet",
+            branch="Aluva",
+            on=date(2026, 11, 12),
+            financial_year="2026-27",
+            job_card="007357",
+            vehicle="KL32Q5712",
+            customer="Arun",
+            bill="6484",
+            amount="1,413",
+            voucher_type="",
+            status="Delivered",
+            service="Repair",
+            adviser="",
+            row_number=1,
+            labour="914",
+            spares="498",
+        )
+        self.assertEqual(track_bill_total(rounded), 1412.0)
+
+    def test_semicolon_in_party_name_keeps_chain_lubrication(self):
+        """Bill 6004: party ledger is ``KL; 42Z 3312``, then the other ledgers."""
+        ledgers = (
+            "MANAGING PARTNER - KL; 42Z 3312, SERVICE-GST, CHAIN LUBRICATION, "
+            "Output-SGST 9%, Output-CGST 9%, Output-SGST 9%-Labour, "
+            "Output-CGST 9%-Labour, Adjust A/C"
+        )
+        ledamts = "1,469.83, 1,045.62, 200.00, 94.10, 94.10, 18.00, 18.00, 0.01"
+        names = split_name_list(ledgers)
+        self.assertEqual(names[0], "MANAGING PARTNER - KL; 42Z 3312")
+        self.assertIn("CHAIN LUBRICATION", names)
+        self.assertEqual(len(names), 8)
+        parts = ledger_fill_parts(ledgers, ledamts, party_name="MANAGING PARTNER")
+        self.assertEqual(parts["labour"], 200.0)
+        self.assertEqual(parts["spares"], 1045.62)
+        self.assertEqual(parts["total"], 1469.83)
+        self.assertEqual(parts["vas"], ["CHAIN LUBRICATION"])
+        stored = (
+            "MANAGING PARTNER - KL; 42Z 3312\n"
+            "SERVICE-GST\n"
+            "CHAIN LUBRICATION"
+        )
+        self.assertEqual(split_name_list(stored)[0], "MANAGING PARTNER - KL; 42Z 3312")
+        self.assertEqual(split_name_list("Paid Service; RSA"), ["Paid Service", "RSA"])
+
     def test_classify_includes_grand_total(self):
         items = "CABLE A, CABLE B, BULB"
         ledgers = (
@@ -230,6 +320,27 @@ class MoneyTests(unittest.TestCase):
         self.assertEqual(parts["labour"], 10700)
         self.assertEqual(parts["total"], 37893.55)
         self.assertEqual(parts["vas"], [])
+
+    def test_tamil_nadu_party_is_the_bill_total_not_labour(self):
+        parts = ledger_fill_parts(
+            "KANNAN-TN 99 Q 1580, SERVICE-GST, LABOUR CHARGE, Paid Service, "
+            "Output-SGST 9%, Output-CGST 9%, Output-SGST 9%-Labour, Output-CGST 9%-Labour",
+            "5340.74, 2681.08, 1845, 0, 241.28, 241.28, 166.05, 166.05",
+        )
+        self.assertEqual(parts["labour"], 1845)
+        self.assertEqual(parts["spares"], 2681.08)
+        self.assertEqual(parts["total"], 5340.74)
+        self.assertEqual(parts["vas"], [])
+
+    def test_tamil_nadu_service_bill_keeps_the_customer_line_out_of_labour(self):
+        parts = ledger_fill_parts(
+            "KANNAN-TN 99 Q 1580, Silencer Coating, TEFLON COATING, CGST, SGST",
+            "1444, 700, 524.40, 109.80, 109.80",
+            service_bill=True,
+        )
+        self.assertEqual(parts["total"], 1444)
+        self.assertEqual(parts["labour"], 1224.40)
+        self.assertEqual(parts["vas"], ["Silencer Coating", "TEFLON COATING"])
 
 
 if __name__ == "__main__":

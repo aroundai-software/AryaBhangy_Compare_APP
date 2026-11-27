@@ -72,6 +72,7 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(record.vehicle, "KL39G3555")
         self.assertEqual(record.branch, "Aluva")
         self.assertEqual(record.bill, "KL10000126006293")
+        self.assertEqual(record.items, "")
 
         window = CompareApp(visible=False)
         try:

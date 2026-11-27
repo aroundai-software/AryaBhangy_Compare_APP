@@ -155,10 +155,88 @@ class FillCardsTests(unittest.TestCase):
             tracksheet_site.apply_website("https://track.aryabhangymotors.com")
             with self.assertRaises(tracksheet_site.SiteError) as caught:
                 tracksheet_site.write_practice_cards([{"job_card": "007362"}])
-            self.assertIn("Tracksheet", str(caught.exception))
+            self.assertIn("token", str(caught.exception).lower())
         finally:
             tracksheet_site.SITE = previous_site
             tracksheet_site.DATABASE = previous_database
+            tracksheet_site.LIVE_WRITE_TOKEN = ""
+
+
+def _editable_card():
+    con = sqlite3.connect(":memory:")
+    con.row_factory = sqlite3.Row
+    con.execute(
+        """
+        CREATE TABLE job_cards (
+            id INTEGER PRIMARY KEY,
+            jc_number TEXT,
+            on_date TEXT,
+            registration TEXT,
+            customer_name TEXT,
+            model TEXT,
+            branch TEXT,
+            serviced_at TEXT,
+            service_type TEXT,
+            booking_source TEXT,
+            adviser TEXT,
+            technician TEXT,
+            status TEXT,
+            final_inspection TEXT,
+            claim TEXT,
+            bill_number TEXT,
+            labour REAL,
+            spares REAL,
+            bill_amount REAL,
+            payment_mode TEXT,
+            vas TEXT,
+            items TEXT,
+            remarks TEXT,
+            repeat_complaint INTEGER,
+            day_serial INTEGER,
+            delivered_on TEXT
+        )
+        """
+    )
+    con.execute(
+        """
+        INSERT INTO job_cards VALUES (
+            1, '005744', '2026-09-25', 'KL41W4558', 'Customer', 'Dio', 'Aluva', '',
+            'PAID', '', 'Roshan', 'Achu', 'Received', '', '', '5240',
+            NULL, 924.71, 1091.16, '', '[]', '', '', 0, 1, NULL
+        )
+        """
+    )
+    return con, con.execute("SELECT * FROM job_cards WHERE id = 1").fetchone()
+
+
+class CellEditTests(unittest.TestCase):
+    def test_money_keeps_paise(self):
+        self.assertEqual(server.money("924.71"), 924.71)
+        self.assertEqual(server.money("1,091.16"), 1091.16)
+
+    def test_clicking_another_cell_keeps_the_gst_total(self):
+        con, current = _editable_card()
+        item = server.clean_payload(con, {"status": "Pending"}, current)
+        self.assertEqual(item["status"], "Pending")
+        self.assertIsNone(item["labour"])
+        self.assertEqual(item["spares"], 924.71)
+        self.assertEqual(item["bill_amount"], 1091.16)
+
+    def test_opening_spares_without_a_new_figure_keeps_the_total(self):
+        con, current = _editable_card()
+        item = server.clean_payload(con, {"spares": 924.71}, current)
+        self.assertEqual(item["spares"], 924.71)
+        self.assertEqual(item["bill_amount"], 1091.16)
+
+    def test_a_new_spare_figure_does_not_replace_the_stored_total(self):
+        con, current = _editable_card()
+        item = server.clean_payload(con, {"spares": 1000}, current)
+        self.assertEqual(item["spares"], 1000)
+        self.assertEqual(item["bill_amount"], 1091.16)
+
+    def test_an_empty_total_is_still_labour_plus_spares(self):
+        self.assertEqual(server.kept_bill_amount(None, 100, 50.5), 150.5)
+        self.assertIsNone(server.kept_bill_amount(None, None, None))
 
 
 if __name__ == "__main__":

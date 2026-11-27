@@ -112,30 +112,29 @@ class _ShellTopBar extends StatelessWidget {
       width: double.infinity,
       color: tsGreen,
       padding: const EdgeInsets.symmetric(horizontal: 20),
-      child: Row(
+      child: Stack(
+        alignment: Alignment.center,
         children: [
-          Container(
-            width: 28,
-            height: 28,
-            decoration: BoxDecoration(
-              color: tsWhite.withValues(alpha: 0.15),
-              borderRadius: BorderRadius.circular(6),
-            ),
-            alignment: Alignment.center,
-            child: const Text(
-              'A',
-              style: TextStyle(
-                color: tsWhite,
-                fontWeight: FontWeight.w700,
-                fontSize: 16,
-              ),
-            ),
-          ),
-          const SizedBox(width: 10),
-          Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            crossAxisAlignment: CrossAxisAlignment.start,
+          Row(
             children: [
+              Container(
+                width: 28,
+                height: 28,
+                decoration: BoxDecoration(
+                  color: tsWhite.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                alignment: Alignment.center,
+                child: const Text(
+                  'A',
+                  style: TextStyle(
+                    color: tsWhite,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 16,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
               const Text(
                 'Arya Bhangy',
                 style: TextStyle(
@@ -145,69 +144,80 @@ class _ShellTopBar extends StatelessWidget {
                   letterSpacing: 0.2,
                 ),
               ),
-              Text(
-                branch.isEmpty ? 'Compare' : 'Compare · $branch',
-                style: const TextStyle(
-                  color: Color(0xFFB8D0C4),
-                  fontSize: 10,
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: 0.4,
-                ),
+              const Spacer(),
+              Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Material(
+                    color: practiceSave
+                        ? const Color(0xFF0E241B)
+                        : const Color(0xFF78350F),
+                    borderRadius: BorderRadius.circular(999),
+                    child: InkWell(
+                      onTap: () => onSelect(2),
+                      borderRadius: BorderRadius.circular(999),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                        child: Row(
+                          children: [
+                            Container(
+                              width: 8,
+                              height: 8,
+                              decoration: BoxDecoration(
+                                color: practiceSave
+                                    ? const Color(0xFF34D399)
+                                    : const Color(0xFFFBBF24),
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              practiceSave
+                                  ? 'Tracksheet  ·  saving allowed'
+                                  : 'Tracksheet  ·  read-only',
+                              style: const TextStyle(color: tsWhite, fontSize: 12),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    branch.isEmpty ? 'Compare' : 'Compare · $branch',
+                    style: const TextStyle(
+                      color: Color(0xFFB8D0C4),
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 0.4,
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
-          const SizedBox(width: 18),
-          _NavTab(
-            label: 'Compare',
-            selected: selected == 0,
-            onTap: () => onSelect(0),
-          ),
-          const SizedBox(width: 6),
-          _NavTab(
-            label: 'History',
-            selected: selected == 1,
-            onTap: () => onSelect(1),
-          ),
-          const SizedBox(width: 6),
-          _NavTab(
-            label: 'Settings',
-            selected: selected == 2,
-            onTap: () => onSelect(2),
-          ),
-          const Spacer(),
-          Material(
-            color: practiceSave
-                ? const Color(0xFF0E241B)
-                : const Color(0xFF78350F),
-            borderRadius: BorderRadius.circular(999),
-            child: InkWell(
-              onTap: () => onSelect(2),
-              borderRadius: BorderRadius.circular(999),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                child: Row(
-                  children: [
-                    Container(
-                      width: 8,
-                      height: 8,
-                      decoration: BoxDecoration(
-                        color: practiceSave
-                            ? const Color(0xFF34D399)
-                            : const Color(0xFFFBBF24),
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      practiceSave
-                          ? 'Tracksheet  ·  saving allowed'
-                          : 'Tracksheet  ·  read-only',
-                      style: const TextStyle(color: tsWhite, fontSize: 12),
-                    ),
-                  ],
-                ),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _NavTab(
+                label: 'Compare',
+                selected: selected == 0,
+                onTap: () => onSelect(0),
               ),
-            ),
+              const SizedBox(width: 6),
+              _NavTab(
+                label: 'History',
+                selected: selected == 1,
+                onTap: () => onSelect(1),
+              ),
+              const SizedBox(width: 6),
+              _NavTab(
+                label: 'Settings',
+                selected: selected == 2,
+                onTap: () => onSelect(2),
+              ),
+            ],
           ),
         ],
       ),

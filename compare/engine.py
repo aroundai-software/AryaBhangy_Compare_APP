@@ -9,9 +9,8 @@ from compare.money import (
     parse_amount,
     split_item_list,
     tally_bill_total,
-    totals_match,
     track_bill_total,
-    vas_missing,
+    vas_keys,
 )
 from compare.normalize import bill_compare_key, format_date, is_service_bill
 from compare.records import CompareResult, Outcome, VoucherRow
@@ -107,6 +106,10 @@ def _stamp_sheet(outcome, track_rows):
         if text and text not in totals:
             totals.append(text)
     outcome.sheet_total = "; ".join(totals)
+    for row in rows:
+        if row.sheet_row_id:
+            outcome.sheet_row_id = row.sheet_row_id
+            break
     return outcome
 
 
@@ -160,6 +163,8 @@ def _copy_job_fields(outcome, records):
         outcome.items = join_name_list(other_items)
     if not outcome.status:
         outcome.status = primary.status or _join(r.status for r in ordered)
+    if primary.source == "tracksheet" and primary.sheet_row_id:
+        outcome.sheet_row_id = primary.sheet_row_id
     return outcome
 
 
@@ -193,6 +198,15 @@ def _tally_money(rows):
     spares = _join(r.spares for r in rows if r.spares)
     vas = _join(r.vas for r in rows if r.vas)
     return labour, spares, vas
+
+
+def _item_name_keys(value):
+    """Item names compared without regard to order or capital letters."""
+    return {
+        " ".join(name.upper().split())
+        for name in split_item_list(value)
+        if " ".join(name.upper().split())
+    }
 
 
 def _tally_items(rows):
@@ -334,7 +348,7 @@ def _apply_fill_display(outcome, fill, hirise_rows, ambiguous):
     outcome.tally_vas = outcome.vas
     if fill["total"]:
         outcome.tally_total = outcome.amount
-    if _FILL_NOTE not in (outcome.reason or ""):
+    if outcome.mark != KEEP and _FILL_NOTE not in (outcome.reason or ""):
         outcome.reason = ((outcome.reason or "").rstrip() + " " + _FILL_NOTE).strip()
     return outcome
 
@@ -403,9 +417,18 @@ def _voucher_rows(tally_records, notes=None):
     return rows
 
 
-def compare(track_records, tally_records):
-    service_bills = [record for record in tally_records if is_service_bill(record.voucher_type)]
-    tally_records = [record for record in tally_records if not is_service_bill(record.voucher_type)]
+def compare(track_records, tally_records, service_types=None):
+    chosen = None
+    if service_types is not None:
+        chosen = {str(name).strip() for name in service_types if str(name).strip()}
+
+    def _service(record):
+        if chosen is None:
+            return is_service_bill(record.voucher_type)
+        return str(record.voucher_type or "").strip() in chosen
+
+    service_bills = [record for record in tally_records if _service(record)]
+    tally_records = [record for record in tally_records if not _service(record)]
     track_groups = defaultdict(list)
     tally_groups = defaultdict(list)
     tally_by_jc = defaultdict(list)
@@ -560,7 +583,6 @@ def compare(track_records, tally_records):
             # VAS from every Tally bill for this JC (incl. other bills / T bills for same JC)
             jc = track_rows[0].job_card
             tally_vas = _vas_from_all_jc_bills(tally_by_jc, jc) or _join(r.vas for r in tally_rows if r.vas)
-            track_vas = track_rows[0].vas
             described.tally_labour = tally_labour
             described.tally_spares = tally_spares
             described.tally_vas = tally_vas
@@ -583,22 +605,14 @@ def compare(track_records, tally_records):
             services = [] if ambiguous else attached.get(key, [])
             fill = combine_fill(tally_rows, services)
             # Ledger fill is the with-tax total of Hirise plus the service bill.
-            # VAS names already show in the column, so a different Tracksheet
-            # VAS list does not by itself become "Added".
             if fill and not ambiguous:
-                missing_vas = []
                 tally_total = fill["total"]
                 fill_labour = format_money(fill["labour"]) if fill["labour"] else ""
                 fill_spares = format_money(fill["spares"]) if fill["spares"] else ""
             else:
-                missing_vas = vas_missing(track_vas, tally_vas)
                 tally_total = tally_bill_total(tally_rows)
                 fill_labour = tally_labour
                 fill_spares = tally_spares
-            labour_ok = money_matches(track_rows[0].labour, tally_labour)
-            spares_ok = money_matches(track_rows[0].spares, tally_spares)
-            track_total = track_bill_total(track_rows[0])
-            bill_total_ok = totals_match(track_total, tally_total)
 
             def _emit(outcome, category):
                 _apply_fill_display(outcome, fill if not ambiguous else combine_fill(tally_rows, []), tally_rows, ambiguous)
@@ -606,76 +620,7 @@ def compare(track_records, tally_records):
                     _set_category(outcome, category)
                 outcomes.append(outcome)
 
-            if track_bills == tally_bills:
-                # Bill # stays as Tracksheet last-4; full voucher is only on Vouchers sheet.
-                # Extra Tracksheet VAS (not on Tally) is ignored for now — no Review remove.
-                # Money rule: if full bill totals match, do not Check only for L/S split.
-                if missing_vas or (fill_labour and not track_rows[0].labour) or (
-                    fill_spares and not track_rows[0].spares
-                ):
-                    described.mark = ADDED
-                    bits = []
-                    if missing_vas:
-                        bits.append("VAS " + ", ".join(missing_vas))
-                    if fill_labour and not track_rows[0].labour:
-                        bits.append(f"Labour ₹{fill_labour}")
-                    if fill_spares and not track_rows[0].spares:
-                        bits.append(f"Spares ₹{fill_spares}")
-                    described.reason = (
-                        "Job card, vehicle, and bill number match. "
-                        "Ready to fill: " + ", ".join(bits) + "."
-                        + date_note
-                    )
-                    _emit(described, NOT_MATCHING)
-                elif bill_total_ok:
-                    described.mark = KEEP
-                    split_note = ""
-                    if not labour_ok or not spares_ok:
-                        split_note = " Labour and spares are split differently, but the bill totals match."
-                    else:
-                        split_note = " The bill totals match."
-                    described.reason = (
-                        "Job card, vehicle, bill number, and total match."
-                        + split_note
-                        + f" Tracksheet ₹{format_money(track_total)}. Tally ₹{format_money(tally_total)}."
-                        + date_note
-                    )
-                    _emit(described, BOTH_MATCH)
-                elif not labour_ok or not spares_ok:
-                    described.mark = CHECK
-                    described.reason = (
-                        "Job card, vehicle, and bill number match, but the totals differ. "
-                        f"Tracksheet ₹{format_money(track_total)}. "
-                        f"Tally ₹{format_money(tally_total)}. "
-                        "Please check before writing."
-                        + date_note
-                    )
-                    _emit(described, ONE_MATCH)
-                else:
-                    described.mark = KEEP
-                    described.reason = (
-                        "Job card, vehicle, bill number, and labour and spares match. "
-                        "Nothing to change."
-                        + date_note
-                    )
-                    _emit(described, BOTH_MATCH)
-            elif not track_bills and tally_bills:
-                described.mark = ADDED
-                last4 = sorted(tally_bills)[0]
-                bits = [f"Bill # {last4}"]
-                if missing_vas:
-                    bits.append("VAS " + ", ".join(missing_vas))
-                if fill_labour and not track_rows[0].labour:
-                    bits.append(f"Labour ₹{fill_labour}")
-                if fill_spares and not track_rows[0].spares:
-                    bits.append(f"Spares ₹{fill_spares}")
-                described.reason = (
-                    "Job card and vehicle match. "
-                    "Ready to fill: " + ", ".join(bits) + "."
-                    + date_note
-                )
-                _emit(described, NOT_MATCHING)
-            elif not tally_bills and track_bills:
+            if not tally_bills and track_bills:
                 # Provisional — client may change Removed meaning later.
                 described.mark = REMOVED
                 described.reason = (
@@ -686,15 +631,74 @@ def compare(track_records, tally_records):
                 )
                 _emit(described, NOT_MATCHING)
             else:
-                described.mark = CHECK
-                described.reason = (
-                    "Job card and vehicle match, but the bill numbers differ. "
-                    f"Tracksheet has {described.track_bill or '—'}. "
-                    f"Tally has {described.tally_bills or '—'}. "
-                    "Please check before writing."
-                    + date_note
-                )
-                _emit(described, ONE_MATCH)
+                written_vas = ", ".join(fill["vas"]) if fill and not ambiguous else tally_vas
+                sheet = track_rows[0]
+                bills_same = track_bills == tally_bills
+                labour_same = money_matches(sheet.labour, fill_labour)
+                spares_same = money_matches(sheet.spares, fill_spares)
+                total_same = money_matches(track_bill_total(sheet), tally_total)
+                vas_same = vas_keys(sheet.vas) == vas_keys(written_vas)
+                items_same = _item_name_keys(sheet.items) == _item_name_keys(described.items)
+                if fill_labour:
+                    described.labour = fill_labour
+                if fill_spares:
+                    described.spares = fill_spares
+                if tally_total:
+                    described.amount = format_money(tally_total)
+                if written_vas:
+                    described.vas = written_vas
+                if (
+                    bills_same
+                    and labour_same
+                    and spares_same
+                    and total_same
+                    and vas_same
+                    and items_same
+                ):
+                    described.mark = KEEP
+                    described.reason = (
+                        "Job card, vehicle, bill number, labour, spares, total, "
+                        "VAS, and items match."
+                        + date_note
+                    )
+                    _emit(described, BOTH_MATCH)
+                else:
+                    described.mark = ADDED
+                    if not bills_same:
+                        tally_bill = _last4_bills(tally_rows)
+                        if tally_bill:
+                            described.track_bill = tally_bill
+                    differ = []
+                    if not bills_same:
+                        differ.append("Bill #")
+                    if not labour_same:
+                        differ.append("Labour")
+                    if not spares_same:
+                        differ.append("Spares")
+                    if not total_same:
+                        differ.append("Total")
+                    if not vas_same:
+                        differ.append("VAS")
+                    if not items_same:
+                        differ.append("Items")
+                    bits = []
+                    if described.track_bill:
+                        bits.append(f"Bill # {described.track_bill}")
+                    if fill_labour:
+                        bits.append(f"Labour ₹{fill_labour}")
+                    if fill_spares:
+                        bits.append(f"Spares ₹{fill_spares}")
+                    if tally_total:
+                        bits.append(f"Total ₹{format_money(tally_total)}")
+                    ready = (" Ready to fill: " + ", ".join(bits) + ".") if bits else ""
+                    described.reason = (
+                        "Job card and vehicle match. "
+                        + ", ".join(differ)
+                        + (" differs." if len(differ) == 1 else " differ.")
+                        + ready
+                        + date_note
+                    )
+                    _emit(described, NOT_MATCHING)
             continue
 
         if tally_rows and not track_rows:

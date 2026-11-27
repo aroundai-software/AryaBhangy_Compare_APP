@@ -84,16 +84,50 @@ class CompareController extends ChangeNotifier {
   String tallyPort = defaultTallyPort;
   String website = defaultWebsite;
   bool allowPracticeSave = false;
+  bool hostedDemo = false;
+  bool originalWritable = false;
   bool checkingConnection = false;
   String connectionNote = '';
+  Map<String, List<String>> voucherTypesByCompany = {};
+  List<String> availableVoucherTypes = const [];
+  String voucherTypesCompany = '';
+  bool loadingVoucherTypes = false;
+  Set<String> draftVoucherTypes = {};
   bool writing = false;
   String writeStatus = '';
   String writtenFor = '';
   final Map<String, Set<String>> writtenByRun = {};
 
-  bool get practiceSite {
+  bool get _localWebsite {
     final host = Uri.tryParse(website.trim())?.host.toLowerCase() ?? '';
     return host == '127.0.0.1' || host == 'localhost';
+  }
+
+  bool get liveWebsite {
+    final host = Uri.tryParse(website.trim())?.host.toLowerCase() ?? '';
+    return host == 'track.aryabhangymotors.com' ||
+        host == 'tracksheet.aryabhangymotors.com';
+  }
+
+  bool get localWebsite => _localWebsite;
+
+  /// The hosted demo, or the original Tracksheet once its update token is in the app.
+  bool get practiceSite => hostedDemo || originalWritable;
+
+  String get writeBlockedNote {
+    if (practiceSite && allowPracticeSave) {
+      return '';
+    }
+    if (liveWebsite && !originalWritable) {
+      return 'Write stays off for the original Tracksheet until the update token is in the app.';
+    }
+    if (_localWebsite) {
+      return 'Use the demo Tracksheet or the original Tracksheet address.';
+    }
+    if (!practiceSite) {
+      return 'Check connection. Saving turns on for the hosted demo or the original Tracksheet.';
+    }
+    return 'Turn on Allow saving on the Tracksheet in Settings before writing.';
   }
 
   List<OutcomeRow> get visibleRows {
@@ -128,7 +162,13 @@ class CompareController extends ChangeNotifier {
       final settings = await _settings.load();
       tallyPort = settings.tallyPort;
       website = settings.website;
-      allowPracticeSave = settings.allowPracticeSave && practiceSite;
+      allowPracticeSave = settings.allowPracticeSave && !_localWebsite;
+      voucherTypesByCompany = {
+        for (final entry in settings.voucherTypesByCompany.entries)
+          entry.key: List<String>.from(entry.value),
+      };
+      hostedDemo = false;
+      originalWritable = false;
       await _bridge.start();
       if (_settingsProblem() == null) {
         _sendSettings();
@@ -178,7 +218,9 @@ class CompareController extends ChangeNotifier {
   void setConnectionFields(String port, String site) {
     tallyPort = port.trim();
     website = site.trim();
-    if (!practiceSite) {
+    hostedDemo = false;
+    originalWritable = false;
+    if (_localWebsite) {
       allowPracticeSave = false;
     }
     notifyListeners();
@@ -236,11 +278,40 @@ class CompareController extends ChangeNotifier {
         AppSettings(
           tallyPort: tallyPort.trim().isEmpty ? defaultTallyPort : tallyPort.trim(),
           website: website.trim(),
-          allowPracticeSave: allowPracticeSave && practiceSite,
+          allowPracticeSave: allowPracticeSave && !_localWebsite,
+          voucherTypesByCompany: {
+            for (final entry in voucherTypesByCompany.entries)
+              entry.key: List<String>.from(entry.value),
+          },
         ),
       );
     } catch (error) {
       debugPrint('Could not save settings: $error');
+    }
+  }
+
+  void _acceptSaveSite(bool saveSite) {
+    final wasWritable = practiceSite;
+    if (_localWebsite) {
+      hostedDemo = false;
+      originalWritable = false;
+      allowPracticeSave = false;
+    } else if (liveWebsite) {
+      hostedDemo = false;
+      originalWritable = saveSite;
+      if (!saveSite) {
+        allowPracticeSave = false;
+      }
+    } else {
+      originalWritable = false;
+      hostedDemo = saveSite;
+    }
+    notifyListeners();
+    if (_localWebsite || (liveWebsite && !saveSite)) {
+      _persistSettings();
+    }
+    if (practiceSite && !wasWritable && allowPracticeSave) {
+      _sendSettings();
     }
   }
 
@@ -292,7 +363,7 @@ class CompareController extends ChangeNotifier {
   }
 
   bool _isBulkRow(OutcomeRow row) =>
-      row.jobCard.isNotEmpty && (row.mark == statusAdded || row.mark == statusKeep);
+      row.jobCard.isNotEmpty && row.mark == statusAdded;
 
   bool _isPendingBulkRow(OutcomeRow row, String? runId) =>
       _isBulkRow(row) && !wasWritten(row, runId: runId);
@@ -304,7 +375,7 @@ class CompareController extends ChangeNotifier {
       return;
     }
     if (!practiceSite) {
-      lastError = 'Writing is only allowed on the Tracksheet on this computer.';
+      lastError = writeBlockedNote;
       writeStatus = lastError!;
       status = lastError!;
       notifyListeners();
@@ -319,7 +390,7 @@ class CompareController extends ChangeNotifier {
     }
     if (rows.isEmpty) {
       lastError = bulk
-          ? 'Nothing to write. Check manually stays off Write all.'
+          ? 'Nothing to write. No change and Check manually stay off Write all.'
           : 'Choose a job card to write.';
       writeStatus = lastError!;
       status = lastError!;
@@ -354,6 +425,7 @@ class CompareController extends ChangeNotifier {
             'total': row.amount,
             'vas': row.vas,
             'items': row.items,
+            'sheet_row_id': row.sheetRowId,
           },
       ],
     });
@@ -367,6 +439,13 @@ class CompareController extends ChangeNotifier {
       lastError =
           'Tally is offline, or no company is loaded. Open a company in Tally first.';
       status = lastError!;
+      notifyListeners();
+      return;
+    }
+    final typesPrompt = voucherTypesPrompt;
+    if (typesPrompt.isNotEmpty) {
+      lastError = typesPrompt;
+      status = typesPrompt;
       notifyListeners();
       return;
     }
@@ -444,6 +523,13 @@ class CompareController extends ChangeNotifier {
       notifyListeners();
       return;
     }
+    final typesPrompt = voucherTypesPrompt;
+    if (typesPrompt.isNotEmpty) {
+      lastError = typesPrompt;
+      status = typesPrompt;
+      notifyListeners();
+      return;
+    }
     _sendSettings();
     busy = true;
     result = null;
@@ -459,7 +545,58 @@ class CompareController extends ChangeNotifier {
       'from': _apiDate.format(fromDate),
       'to': _apiDate.format(toDate),
       'branch': selectedBranch,
+      'voucher_types': List<String>.from(voucherTypesByCompany[company] ?? const []),
     });
+  }
+
+  String get voucherTypesPrompt {
+    if (!tallyOnline || company.isEmpty) {
+      return '';
+    }
+    if (!voucherTypesByCompany.containsKey(company)) {
+      return 'Choose the voucher types for $company in Settings and save them before comparing.';
+    }
+    if (voucherTypesByCompany[company]!.isEmpty) {
+      return 'Tick at least one voucher type for $company in Settings and save before comparing.';
+    }
+    return '';
+  }
+
+  void loadVoucherTypes({bool force = false}) {
+    if (!tallyOnline || company.isEmpty || loadingVoucherTypes) {
+      return;
+    }
+    if (!force && voucherTypesCompany == company) {
+      return;
+    }
+    loadingVoucherTypes = true;
+    notifyListeners();
+    _bridge.send(const {'cmd': 'voucher_types.list'});
+  }
+
+  void saveVoucherTypes(Iterable<String> chosen) {
+    if (company.isEmpty) {
+      lastError = 'Open a company in Tally first.';
+      status = lastError!;
+      notifyListeners();
+      return;
+    }
+    final names = <String>[];
+    for (final item in chosen) {
+      final text = item.trim();
+      if (text.isNotEmpty && !names.contains(text)) {
+        names.add(text);
+      }
+    }
+    names.sort();
+    draftVoucherTypes = names.toSet();
+    voucherTypesByCompany[company] = names;
+    status = names.isEmpty
+        ? 'Saved an empty voucher list for $company. Tick at least one type before comparing.'
+        : 'Saved ${names.length} voucher types for $company.';
+    lastError = null;
+    notifyListeners();
+    _persistSettings();
   }
 
   void saveExcel(String path) {
@@ -496,7 +633,13 @@ class CompareController extends ChangeNotifier {
         break;
       case 'tally.status':
         tallyOnline = event['online'] == true;
-        company = (event['company'] ?? '').toString();
+        final nextCompany = (event['company'] ?? '').toString();
+        if (nextCompany != company) {
+          availableVoucherTypes = const [];
+          voucherTypesCompany = '';
+          draftVoucherTypes = {};
+        }
+        company = nextCompany;
         if (!tallyOnline) {
           status = 'Tally offline';
         } else if (company.isEmpty) {
@@ -596,17 +739,45 @@ class CompareController extends ChangeNotifier {
           status = writeStatus;
         }
         break;
+      case 'settings.applied':
+        _acceptSaveSite(event['save_site'] == true);
+        break;
       case 'settings.checked':
         checkingConnection = false;
         final tallyMessage = (event['tally_message'] ?? '').toString();
         final websiteMessage = (event['website_message'] ?? '').toString();
         connectionNote = '$tallyMessage\n$websiteMessage';
+        _acceptSaveSite(event['save_site'] == true);
+        break;
+      case 'voucher_types.loaded':
+        loadingVoucherTypes = false;
+        final loadedCompany = (event['company'] ?? company).toString();
+        if (loadedCompany.isNotEmpty && loadedCompany != company) {
+          break;
+        }
+        voucherTypesCompany = company;
+        final names = <String>[];
+        final rawNames = event['names'];
+        if (rawNames is List) {
+          for (final item in rawNames) {
+            final text = item.toString().trim();
+            if (text.isNotEmpty && !names.contains(text)) {
+              names.add(text);
+            }
+          }
+        }
+        availableVoucherTypes = names;
+        draftVoucherTypes = {...?voucherTypesByCompany[company]};
         break;
       case 'error':
         busy = false;
         final wasWriting = writing;
         writing = false;
         checkingConnection = false;
+        if (loadingVoucherTypes) {
+          loadingVoucherTypes = false;
+          voucherTypesCompany = company;
+        }
         lastError = (event['message'] ?? 'Unknown error').toString();
         status = lastError!;
         if (wasWriting) {

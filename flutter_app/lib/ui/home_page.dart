@@ -102,7 +102,7 @@ class _LegacyTopBar extends StatelessWidget {
           ),
           const Spacer(),
           const Text(
-            'Hirise Invoice Service  ·  Tracksheet read-only',
+            'Hirise Invoice Service',
             style: TextStyle(color: Color(0xFFB8D0C4), fontSize: 12),
           ),
         ],
@@ -330,7 +330,7 @@ class _CompareAftermath extends StatelessWidget {
                           _KpiCard(
                             title: 'No change',
                             count: result.keep,
-                            note: 'Job card, vehicle, bill, and total already agree.',
+                            note: 'Bill #, Labour, Spares, Total, VAS, and Items already match.',
                             accent: const Color(0xFF334155),
                             background: const Color(0xFFF8FAFC),
                             border: const Color(0xFFE2E8F0),
@@ -340,15 +340,15 @@ class _CompareAftermath extends StatelessWidget {
                       ),
                       const SizedBox(height: 18),
                       const Text(
-                        'Write all saves Bill #, Labour, Spares, Total, VAS, and Items for Added and No change. Check manually is reviewed one job at a time.',
+                        'Write all saves Bill #, Labour, Spares, Total, VAS, and Items for Added to track. No change is already the same, so it is left as it is.',
                         style: TextStyle(color: tsMuted, fontSize: 12, height: 1.35),
                       ),
-                      if (!controller.practiceSite || !controller.allowPracticeSave)
-                        const Padding(
-                          padding: EdgeInsets.only(top: 6),
+                      if (controller.writeBlockedNote.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 6),
                           child: Text(
-                            'Turn on Allow saving on the Tracksheet in Settings before writing.',
-                            style: TextStyle(color: tsMuted, fontSize: 12),
+                            controller.writeBlockedNote,
+                            style: const TextStyle(color: tsMuted, fontSize: 12),
                           ),
                         ),
                       const SizedBox(height: 14),
@@ -590,7 +590,21 @@ class _FilterBar extends StatelessWidget {
         borderRadius: BorderRadius.circular(10),
         border: Border.all(color: tsLine),
       ),
-      child: Wrap(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (controller.voucherTypesPrompt.isNotEmpty) ...[
+            Text(
+              controller.voucherTypesPrompt,
+              style: const TextStyle(
+                color: tsAmber,
+                height: 1.35,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 10),
+          ],
+          Wrap(
         spacing: 12,
         runSpacing: 10,
         crossAxisAlignment: WrapCrossAlignment.end,
@@ -636,7 +650,9 @@ class _FilterBar extends StatelessWidget {
             onPicked: controller.setTo,
           ),
           FilledButton.icon(
-            onPressed: controller.busy || controller.starting
+            onPressed: controller.busy ||
+                    controller.starting ||
+                    controller.voucherTypesPrompt.isNotEmpty
                 ? null
                 : controller.runCompare,
             style: FilledButton.styleFrom(
@@ -653,7 +669,9 @@ class _FilterBar extends StatelessWidget {
             label: Text(controller.busy ? 'Running…' : 'Run compare'),
           ),
           OutlinedButton.icon(
-            onPressed: controller.busy || controller.starting
+            onPressed: controller.busy ||
+                    controller.starting ||
+                    controller.voucherTypesPrompt.isNotEmpty
                 ? null
                 : controller.syncFromLast,
             style: OutlinedButton.styleFrom(
@@ -681,6 +699,8 @@ class _FilterBar extends StatelessWidget {
             ),
             icon: const Icon(Icons.table_view_outlined, size: 18),
             label: const Text('Export Excel'),
+          ),
+        ],
           ),
         ],
       ),

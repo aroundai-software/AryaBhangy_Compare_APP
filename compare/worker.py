@@ -1,8 +1,8 @@
 """JSON-line worker for the Flutter UI.
 
 One JSON object per stdin line (commands). One JSON object per stdout line
-(events). stderr is for logs only. Tally stays read-only. Tracksheet writes
-go only to a practice copy on this computer.
+(events). stderr is for logs only. Tally stays read-only. Tracksheet writes follow the website address. The hosted demo uses its save.
+The original Tracksheet updates the row that was read when its token is in the app.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from compare.engine import (
     REMOVED,
     compare,
 )
-from compare.normalize import as_date, bill_compare_key, format_date
+from compare.normalize import as_date, bill_compare_key, format_date, is_hirise_invoice_service
 from compare.records import Outcome, VoucherRow
 from compare.report import summary_lines, write_report
 from compare.session import (
@@ -34,15 +34,24 @@ from compare.session import (
     filter_records,
     merge_tracksheet_for_tally_jcs,
 )
-from compare.tally_gateway import apply_tally_port, current_company, hirise_vouchers, tally_status
+from compare.tally_gateway import (
+    apply_tally_port,
+    current_company,
+    hirise_vouchers,
+    tally_status,
+    voucher_type_names,
+)
 from compare.tracksheet_site import (
     SITE,
     apply_website,
     branch_names,
+    can_save_site,
+    confirm_site,
     is_practice_site,
     job_cards,
     job_cards_by_numbers,
     probe_website,
+    save_blocked_reason,
     write_practice_cards,
 )
 
@@ -124,6 +133,9 @@ class Worker:
         if command == "branches.load":
             self._branches()
             return
+        if command == "voucher_types.list":
+            self._voucher_types()
+            return
         if command == "compare.run":
             self._compare(message)
             return
@@ -142,15 +154,16 @@ class Worker:
     def _apply_settings(self, message):
         port = apply_tally_port(message.get("tally_port"))
         apply_website(message.get("website"))
-        practice = is_practice_site()
-        allow = bool(message.get("allow_practice_save")) and practice
+        save_site = confirm_site()
+        allow = bool(message.get("allow_practice_save")) and save_site
         self._allow_practice_save = allow
         self.emit(
             {
                 "event": "settings.applied",
                 "tally_port": port,
                 "website": SITE,
-                "practice": practice,
+                "practice": is_practice_site(),
+                "save_site": save_site,
                 "allow_practice_save": allow,
             }
         )
@@ -162,11 +175,11 @@ class Worker:
         online = bool(status.get("online"))
         company = status.get("name") or ""
         if online and company:
-            tally_message = f"Tally answered on port {port}. {company}."
+            tally_message = f"Connected to Tally on port {port}. {company}."
         elif online:
-            tally_message = f"Tally answered on port {port}. No company is loaded."
+            tally_message = f"Connected to Tally on port {port}. Open a company in Tally."
         else:
-            tally_message = f"Tally did not answer on port {port}."
+            tally_message = f"Unable to connect to Tally on port {port}."
         website_ok, website_message = probe_website(timeout=8)
         self._last_online = online
         self._last_company = company
@@ -179,6 +192,7 @@ class Worker:
                 "website_ok": website_ok,
                 "website_message": website_message,
                 "practice": is_practice_site(),
+                "save_site": can_save_site(),
                 "allow_practice_save": self._allow_practice_save,
             }
         )
@@ -203,6 +217,38 @@ class Worker:
         matched = company_branch(self._last_company, names) if self._last_company else ""
         self.emit({"event": "branches.loaded", "names": names, "preferred": matched})
 
+    def _voucher_types(self):
+        names = voucher_type_names()
+        company = self._last_company or ""
+        try:
+            company = current_company() or company
+        except Exception:
+            pass
+
+        def rank(name):
+            folded = name.upper()
+            if folded == "HIRISE INVOICE SERVICE":
+                return (0, folded)
+            if "SERVICE BILL" in folded:
+                return (1, folded)
+            return (2, folded)
+
+        self.emit(
+            {
+                "event": "voucher_types.loaded",
+                "company": company,
+                "names": sorted(names, key=rank),
+            }
+        )
+
+    def _chosen_voucher_types(self, message):
+        chosen = []
+        for item in message.get("voucher_types") or []:
+            text = str(item or "").strip()
+            if text and text not in chosen:
+                chosen.append(text)
+        return chosen
+
     def _compare(self, message):
         if self._busy:
             self.emit({"event": "error", "message": "A compare is already running."})
@@ -216,6 +262,18 @@ class Worker:
             self.emit({"event": "error", "message": "From date is after To date."})
             return
         branch = (message.get("branch") or ALL_BRANCHES).strip() or ALL_BRANCHES
+        voucher_types = self._chosen_voucher_types(message)
+        if not voucher_types:
+            self.emit(
+                {
+                    "event": "error",
+                    "message": (
+                        "Choose the voucher types for this company in Settings "
+                        "and save them before comparing."
+                    ),
+                }
+            )
+            return
         self._busy = True
         started = time.perf_counter()
         phase = {"tracksheet_s": 0.0, "tally_s": 0.0, "extra_jc_s": 0.0, "compare_s": 0.0}
@@ -269,7 +327,12 @@ class Worker:
                         }
                     )
 
-                chunk = hirise_vouchers(chunk_start, chunk_end, progress=tally_progress)
+                chunk = hirise_vouchers(
+                    chunk_start,
+                    chunk_end,
+                    progress=tally_progress,
+                    voucher_types=voucher_types,
+                )
                 seen_tally += len(chunk)
                 tally_records.extend(chunk)
             for index, record in enumerate(tally_records, start=1):
@@ -301,7 +364,12 @@ class Worker:
             phase["extra_jc_s"] = round(time.perf_counter() - t0, 2)
 
             t0 = time.perf_counter()
-            result = compare(track_records, tally_records)
+            service_types = [
+                name for name in voucher_types if not is_hirise_invoice_service(name)
+            ]
+            result = compare(
+                track_records, tally_records, service_types=service_types
+            )
             phase["compare_s"] = round(time.perf_counter() - t0, 2)
             total_s = round(time.perf_counter() - started, 2)
             phase["total_s"] = total_s
@@ -356,10 +424,11 @@ class Worker:
         try:
             if message.get("website"):
                 apply_website(message.get("website"))
-            allow = bool(message.get("allow_practice_save")) and is_practice_site()
+                confirm_site()
+            allow = bool(message.get("allow_practice_save")) and can_save_site()
             self._allow_practice_save = allow
-            if not is_practice_site():
-                raise RuntimeError("Writing is only allowed on the Tracksheet on this computer.")
+            if not can_save_site():
+                raise RuntimeError(save_blocked_reason())
             if not allow:
                 raise RuntimeError("Turn on saving for the Tracksheet in Settings.")
             rows = message.get("rows") or []
@@ -381,6 +450,7 @@ class Worker:
                         "total": row.get("total") or "",
                         "vas": row.get("vas") or "",
                         "items": row.get("items") or "",
+                        "sheet_row_id": _sheet_row_id(row.get("sheet_row_id")),
                     }
                 )
             if not cards:
@@ -461,6 +531,13 @@ def _sheet_vehicle(row):
     return vehicle
 
 
+def _sheet_row_id(value):
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _write_bill(row):
     """Bill # to save. A vehicle mismatch keeps the sheet bill empty for display."""
     bill = str(row.get("bill") or "").strip()
@@ -513,6 +590,7 @@ def _outcome_row(outcome):
         "sheet_total": outcome.sheet_total,
         "sheet_vas": outcome.sheet_vas,
         "sheet_when": outcome.sheet_when,
+        "sheet_row_id": outcome.sheet_row_id,
     }
 
 
@@ -569,6 +647,7 @@ def _outcome_from_dict(data):
         sheet_total=str(data.get("sheet_total") or ""),
         sheet_vas=str(data.get("sheet_vas") or ""),
         sheet_when=str(data.get("sheet_when") or ""),
+        sheet_row_id=_sheet_row_id(data.get("sheet_row_id")),
     )
 
 

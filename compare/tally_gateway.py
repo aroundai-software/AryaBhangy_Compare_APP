@@ -246,24 +246,32 @@ def voucher_type_names(timeout=12):
     return names
 
 
-def hirise_on_day(day, timeout=8):
-    """Read one day of Hirise Invoice Service vouchers."""
-    return hirise_between(day, day, timeout=timeout)
+def hirise_on_day(day, timeout=8, voucher_types=None):
+    """Read one day of the chosen voucher types."""
+    return hirise_between(day, day, timeout=timeout, voucher_types=voucher_types)
 
 
-def hirise_between(start, end, timeout=45):
-    """Read Hirise Invoice Service vouchers for a date range in one Tally export.
+def _voucher_type_formula(name):
+    safe = as_text(name).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    safe = safe.replace('"', "")
+    return f'$$IsEqual:$VoucherTypeName:"{safe}"'
+
+
+def hirise_between(start, end, timeout=45, voucher_types=None):
+    """Read the chosen voucher types for a date range in one Tally export.
 
     Belongsto keeps the walk inside SVFromDate–SVToDate, instead of every
-    voucher of this type in the company.
+    voucher of this type in the company. With no list, Hirise Invoice Service
+    and SERVICE BILL -GST are read.
     """
+    names = [as_text(name) for name in (voucher_types or (HIRISE, *SERVICE_BILL_NAMES)) if as_text(name)]
+    if not names:
+        names = [HIRISE, *SERVICE_BILL_NAMES]
     stamp_from = start.strftime("%Y%m%d")
     stamp_to = end.strftime("%Y%m%d")
     shown_from = start.strftime("%d-%b-%Y")
     shown_to = end.strftime("%d-%b-%Y")
-    keep_type = " OR ".join(
-        f'$$IsEqual:$VoucherTypeName:"{name}"' for name in (HIRISE, *SERVICE_BILL_NAMES)
-    )
+    keep_type = " OR ".join(_voucher_type_formula(name) for name in names)
     # A cancelled bill stays in Tally after a new one is created. Leave it out.
     keep = f"({keep_type}) AND NOT $IsCancelled"
     xml = f"""<ENVELOPE>
@@ -327,14 +335,28 @@ def hirise_between(start, end, timeout=45):
     text = _post(xml, timeout=timeout)
     if "ERRORMSG" in text and "<BILL" not in text.upper() and "<VOUCHER" not in text.upper():
         raise RuntimeError(_error_text(text))
-    return _vouchers_from_xml(text)
+    return _vouchers_from_xml(text, names)
 
 
-def hirise_vouchers(start, end, timeout=8, progress=None):
-    """Read Hirise Invoice Service for the whole From–To range.
+_STILL_READING = (
+    "Tally is still reading the bills. Wait until Tally responds, "
+    "then run Compare again."
+)
 
-    Prefers one range export (much faster). Falls back to one day at a time
-    if the range export fails — Tally is left sequential (not parallel).
+
+def _tally_still_reading(error):
+    """True when the app stopped waiting but Tally may still be building the list."""
+    if isinstance(error, OSError):
+        return True
+    return isinstance(getattr(error, "reason", None), OSError)
+
+
+def hirise_vouchers(start, end, timeout=8, progress=None, voucher_types=None):
+    """Read Hirise Invoice Service one day at a time.
+
+    A whole-range export keeps Tally's screen busy until every bill in the
+    dates is built. One day answers quickly, and the next day is not sent
+    until this day has answered. If a day does not answer, stop.
     """
     if not isinstance(start, date) or not isinstance(end, date) or end < start:
         raise RuntimeError("Choose a From date and a To date.")
@@ -343,34 +365,37 @@ def hirise_vouchers(start, end, timeout=8, progress=None):
 
     if progress is not None:
         progress(start, 0)
+    day_timeout = max(int(timeout or 8), 30)
+    return _hirise_by_day(
+        start, end, timeout=day_timeout, progress=progress, voucher_types=voucher_types
+    )
 
-    range_timeout = max(int(timeout or 8), 45)
-    try:
-        records = hirise_between(start, end, timeout=range_timeout)
-        for index, record in enumerate(records, start=1):
-            record.row_number = index
-        if progress is not None:
-            progress(end, len(records))
-        return records
-    except Exception:
-        # Older / busy Tally builds sometimes choke on a large range export.
-        pass
 
+def _hirise_by_day(start, end, timeout, progress=None, voucher_types=None):
+    """Read each day only after Tally has answered for that day."""
     records = []
     day = start
     number = 1
     while day <= end:
         if progress is not None:
             progress(day, len(records))
-        for record in hirise_on_day(day, timeout=timeout):
+        try:
+            found = hirise_on_day(day, timeout=timeout, voucher_types=voucher_types)
+        except Exception as error:
+            if _tally_still_reading(error):
+                raise RuntimeError(_STILL_READING) from error
+            raise
+        for record in found:
             record.row_number = number
             records.append(record)
             number += 1
         day += timedelta(days=1)
+    if progress is not None:
+        progress(end, len(records))
     return records
 
 
-def _vouchers_from_xml(text):
+def _vouchers_from_xml(text, allowed=None):
     try:
         root = ET.fromstring(text)
     except ET.ParseError as error:
@@ -379,14 +404,14 @@ def _vouchers_from_xml(text):
     bills = [
         node
         for node in bills
-        if _keep_voucher_type(_child(node, "VCHTYPE")) and not _is_cancelled(_child(node, "CANCELLED"))
+        if _keep_voucher_type(_child(node, "VCHTYPE"), allowed) and not _is_cancelled(_child(node, "CANCELLED"))
     ]
     if bills:
         return [_record_from_bill(node, index) for index, node in enumerate(bills, start=1)]
     records = []
     for index, node in enumerate(root.iter("VOUCHER"), start=1):
         voucher_type = _child(node, "VOUCHERTYPENAME")
-        if voucher_type and not _keep_voucher_type(voucher_type):
+        if voucher_type and not _keep_voucher_type(voucher_type, allowed):
             continue
         if _is_cancelled(_child(node, "ISCANCELLED")):
             continue
@@ -499,11 +524,12 @@ def _is_cancelled(value):
     return as_text(value).lower() in {"yes", "true", "1"}
 
 
-def _keep_voucher_type(voucher_type):
+def _keep_voucher_type(voucher_type, allowed=None):
     """Old exports omit the type and are Hirise. Receipts and journals are dropped."""
+    names = [as_text(name) for name in (allowed or (HIRISE, *SERVICE_BILL_NAMES)) if as_text(name)]
     if not as_text(voucher_type):
-        return True
-    return is_hirise_invoice_service(voucher_type) or is_service_bill(voucher_type)
+        return any(is_hirise_invoice_service(name) for name in names)
+    return as_text(voucher_type) in names
 
 
 def _child(node, name):

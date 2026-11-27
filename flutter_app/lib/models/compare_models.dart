@@ -44,6 +44,7 @@ class OutcomeRow {
     this.sheetVas = '',
     this.sheetWhen = '',
     this.sheetKnown = false,
+    this.sheetRowId = 0,
   });
 
   final String mark;
@@ -81,6 +82,7 @@ class OutcomeRow {
   final String sheetVas;
   final String sheetWhen;
   final bool sheetKnown;
+  final int sheetRowId;
 
   factory OutcomeRow.fromJson(Map<String, dynamic> json) {
     final mark = (json['mark'] ?? '').toString();
@@ -121,6 +123,7 @@ class OutcomeRow {
       sheetVas: (json['sheet_vas'] ?? '').toString(),
       sheetWhen: (json['sheet_when'] ?? '').toString(),
       sheetKnown: json.containsKey('sheet_bill'),
+      sheetRowId: int.tryParse('${json['sheet_row_id'] ?? ''}') ?? 0,
     );
   }
 
@@ -159,6 +162,7 @@ class OutcomeRow {
         if (sheetKnown) 'sheet_total': sheetTotal,
         if (sheetKnown) 'sheet_vas': sheetVas,
         if (sheetKnown) 'sheet_when': sheetWhen,
+        'sheet_row_id': sheetRowId,
       };
 }
 

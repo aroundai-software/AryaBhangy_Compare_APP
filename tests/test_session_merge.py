@@ -1,7 +1,7 @@
 import unittest
 from datetime import date
 
-from compare.engine import CHECK, KEEP, compare
+from compare.engine import ADDED, CHECK, compare
 from compare.records import Record
 from compare.session import merge_tracksheet_for_tally_jcs
 
@@ -70,7 +70,7 @@ class MergeTracksheetForTallyJcsTests(unittest.TestCase):
         self.assertEqual(merged[0].on, date(2026, 10, 15))
 
         result = compare(merged, bills)
-        self.assertEqual(result.count(KEEP), 1)
+        self.assertEqual(result.count(ADDED), 1)
         self.assertIn("differs from bill date", result.outcomes[0].reason)
 
     def test_skips_fetch_when_jc_vehicle_already_in_window(self):
