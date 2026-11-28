@@ -290,11 +290,11 @@ class _CompareAftermath extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      Wrap(
-                        spacing: 12,
-                        runSpacing: 12,
+                      IntrinsicHeight(
+                        child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          _KpiCard(
+                          Expanded(child: _KpiCard(
                             title: 'Added to track',
                             count: result.added,
                             note: 'Matched job card and vehicle. Ready to write.',
@@ -302,8 +302,9 @@ class _CompareAftermath extends StatelessWidget {
                             background: const Color(0xFFECFDF5),
                             border: const Color(0xFFA7F3D0),
                             onTap: () => open(statusAdded),
-                          ),
-                          _KpiCard(
+                          )),
+                          const SizedBox(width: 12),
+                          Expanded(child: _KpiCard(
                             title: 'Check manually',
                             count: result.check,
                             note: partial == 0
@@ -317,8 +318,9 @@ class _CompareAftermath extends StatelessWidget {
                             border: const Color(0xFFFBBF24),
                             emphasize: true,
                             onTap: () => open(statusCheck),
-                          ),
-                          _KpiCard(
+                          )),
+                          const SizedBox(width: 12),
+                          Expanded(child: _KpiCard(
                             title: 'Removed from sheet',
                             count: result.removed,
                             note: 'Provisional. Nothing is deleted.',
@@ -326,8 +328,9 @@ class _CompareAftermath extends StatelessWidget {
                             background: const Color(0xFFFFF1F2),
                             border: const Color(0xFFFECDD3),
                             onTap: () => open(statusRemoved),
-                          ),
-                          _KpiCard(
+                          )),
+                          const SizedBox(width: 12),
+                          Expanded(child: _KpiCard(
                             title: 'No change',
                             count: result.keep,
                             note: 'Bill #, Labour, Spares, Total, VAS, and Items already match.',
@@ -335,8 +338,9 @@ class _CompareAftermath extends StatelessWidget {
                             background: const Color(0xFFF8FAFC),
                             border: const Color(0xFFE2E8F0),
                             onTap: () => open(statusKeep),
-                          ),
+                          )),
                         ],
+                        ),
                       ),
                       const SizedBox(height: 18),
                       const Text(
@@ -360,9 +364,9 @@ class _CompareAftermath extends StatelessWidget {
                             onPressed: onOpenHistoryRun == null
                                 ? null
                                 : () => open(statusCheck),
-                            style: FilledButton.styleFrom(
-                              backgroundColor: tsGreen,
-                              foregroundColor: tsWhite,
+                            style: glassLook(
+                              fill: tsGreen,
+                              foreground: tsWhite,
                               padding: const EdgeInsets.symmetric(
                                 horizontal: 16,
                                 vertical: 14,
@@ -377,9 +381,9 @@ class _CompareAftermath extends StatelessWidget {
                                     controller.writeAllCount(result.rows) > 0
                                 ? () => controller.writeAll(result.rows)
                                 : null,
-                            style: OutlinedButton.styleFrom(
-                              foregroundColor: tsGreen,
-                              side: const BorderSide(color: tsGreen),
+                            style: glassLook(
+                              fill: tsGreen,
+                              foreground: tsWhite,
                               padding: const EdgeInsets.symmetric(
                                 horizontal: 16,
                                 vertical: 14,
@@ -394,8 +398,7 @@ class _CompareAftermath extends StatelessWidget {
                             onPressed: onOpenHistoryRun == null
                                 ? null
                                 : () => open(statusAdded),
-                            style: OutlinedButton.styleFrom(
-                              foregroundColor: tsInk,
+                            style: glassLook(
                               padding: const EdgeInsets.symmetric(
                                 horizontal: 16,
                                 vertical: 14,
@@ -405,8 +408,8 @@ class _CompareAftermath extends StatelessWidget {
                           ),
                           OutlinedButton.icon(
                             onPressed: () => _export(context, controller),
-                            style: OutlinedButton.styleFrom(
-                              foregroundColor: tsInk,
+                            style: glassLook(
+                              foreground: tsGreen,
                               padding: const EdgeInsets.symmetric(
                                 horizontal: 16,
                                 vertical: 14,
@@ -501,17 +504,17 @@ class _KpiCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      width: 240,
-      child: Material(
-        color: background,
+    return Material(
+      color: background,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        onTap: onTap,
         borderRadius: BorderRadius.circular(12),
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(12),
-          child: Container(
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
+        child: Container(
+          width: double.infinity,
+          alignment: Alignment.topLeft,
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(12),
               border: Border.all(color: border, width: emphasize ? 2 : 1),
             ),
@@ -571,7 +574,6 @@ class _KpiCard extends StatelessWidget {
             ),
           ),
         ),
-      ),
     );
   }
 }
@@ -655,13 +657,10 @@ class _FilterBar extends StatelessWidget {
                     controller.voucherTypesPrompt.isNotEmpty
                 ? null
                 : controller.runCompare,
-            style: FilledButton.styleFrom(
-              backgroundColor: tsGreen,
-              foregroundColor: tsWhite,
+            style: glassLook(
+              fill: tsGreen,
+              foreground: tsWhite,
               padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(8),
-              ),
             ),
             icon: Icon(
               controller.busy ? Icons.hourglass_top : Icons.play_arrow_rounded,
@@ -674,13 +673,9 @@ class _FilterBar extends StatelessWidget {
                     controller.voucherTypesPrompt.isNotEmpty
                 ? null
                 : controller.syncFromLast,
-            style: OutlinedButton.styleFrom(
-              foregroundColor: tsGreen,
-              side: const BorderSide(color: tsGreen),
+            style: glassLook(
+              foreground: tsGreen,
               padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(8),
-              ),
             ),
             icon: const Icon(Icons.sync, size: 18),
             label: const Text('Sync from last'),
@@ -689,13 +684,9 @@ class _FilterBar extends StatelessWidget {
             onPressed: controller.result == null || controller.busy
                 ? null
                 : () => _export(context),
-            style: OutlinedButton.styleFrom(
-              foregroundColor: tsGreen,
-              side: const BorderSide(color: tsGreen),
+            style: glassLook(
+              foreground: tsGreen,
               padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(8),
-              ),
             ),
             icon: const Icon(Icons.table_view_outlined, size: 18),
             label: const Text('Export Excel'),
@@ -802,14 +793,8 @@ class _DateButton extends StatelessWidget {
                     onPicked(picked);
                   }
                 },
-          style: OutlinedButton.styleFrom(
-            backgroundColor: tsWhite,
-            foregroundColor: tsInk,
-            side: const BorderSide(color: tsLine),
+          style: glassLook(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 14),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(8),
-            ),
             alignment: Alignment.centerLeft,
           ),
           child: Row(

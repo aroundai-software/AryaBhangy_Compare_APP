@@ -859,9 +859,9 @@ class _Inspector extends StatelessWidget {
                   checkRowWriteEnabled(row.reason))
                 FilledButton.icon(
                   onPressed: onWrite,
-                  style: FilledButton.styleFrom(
-                    backgroundColor: tsGreen,
-                    foregroundColor: tsWhite,
+                  style: glassLook(
+                    fill: tsGreen,
+                    foreground: tsWhite,
                   ),
                   icon: const Icon(Icons.save_outlined, size: 18),
                   label: const Text('Write Tally values to Tracksheet'),

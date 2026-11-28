@@ -1,7 +1,7 @@
-; Aryabhangy Compare 1.0.2
+; Aryabhangy Compare 1.0.4
 ; Build with installer\build_setup.ps1. The staged files are in dist\stage.
 
-#define AppVersion "1.0.2"
+#define AppVersion "1.0.4"
 #define AppName "Aryabhangy Compare"
 #define AppExe "aryabhangy_compare.exe"
 
@@ -31,9 +31,12 @@ RestartApplications=no
 [Files]
 Source: "..\dist\stage\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
+[Tasks]
+Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"; Flags: checkedonce
+
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExe}"
-Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\{#AppExe}"; Description: "Open {#AppName}"; Flags: nowait postinstall skipifsilent

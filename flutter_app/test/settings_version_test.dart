@@ -9,6 +9,6 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(home: Scaffold(body: SettingsPage(controller: controller))),
     );
-    expect(find.text('Version 1.0.2'), findsOneWidget);
+    expect(find.text('Version 1.0.4'), findsOneWidget);
   });
 }

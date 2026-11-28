@@ -1,5 +1,8 @@
+import 'dart:typed_data';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:intl/intl.dart';
 
 import '../models/compare_models.dart';
@@ -22,29 +25,38 @@ class HistoryPage extends StatefulWidget {
     super.key,
     required this.controller,
     this.active = true,
+    this.settled = true,
+    this.motion = false,
     this.openRunId,
     this.openMark,
     this.openRunToken = 0,
+    this.onHome,
   });
 
   final CompareController controller;
   final bool active;
+  final bool settled;
+  final bool motion;
   final String? openRunId;
   final String? openMark;
   final int openRunToken;
+  final VoidCallback? onHome;
 
   @override
   State<HistoryPage> createState() => _HistoryPageState();
 }
 
-class _HistoryPageState extends State<HistoryPage> {
+class _HistoryPageState extends State<HistoryPage> with SingleTickerProviderStateMixin {
   final ResultStore _store = ResultStore();
   final DateFormat _uiDate = DateFormat('dd-MM-yyyy');
   final DateFormat _uiDateTime = DateFormat('dd-MM-yyyy, h:mm a');
   final TextEditingController _searchController = TextEditingController();
 
   List<HistoryRunSummary> _all = const [];
+  List<HistoryRunSummary>? _deferredList;
+  int _reloadSerial = 0;
   bool _loading = true;
+  bool _refreshing = false;
   String? _error;
   String? _selectedId;
   CompareResultView? _detail;
@@ -55,23 +67,128 @@ class _HistoryPageState extends State<HistoryPage> {
   String _search = '';
   _HistorySort _sort = _HistorySort.newestRun;
   bool _tableView = true;
+  int _openSerial = 0;
+  CompareResultView? _queuedDetail;
+  Uint8List? _queuedBytes;
+  String? _queuedMark;
+  bool _detailQueued = false;
+  bool _flushPosted = false;
+  int _previewAdded = 0;
+  int _previewRemoved = 0;
+  int _previewCheck = 0;
+  int _previewKeep = 0;
+  int _warmSerial = 0;
+  bool _prepareDetail = false;
+  final GlobalKey _listBoundary = GlobalKey();
+  final GlobalKey _detailBoundary = GlobalKey();
+  late final AnimationController _pane;
+  late final CurvedAnimation _paneSlide;
 
   @override
   void initState() {
     super.initState();
+    _pane = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 420),
+    );
+    _paneSlide = CurvedAnimation(
+      parent: _pane,
+      curve: Curves.easeOutQuart,
+      reverseCurve: Curves.easeOutQuart,
+    );
+    _pane.addStatusListener(_onPaneStatus);
     widget.controller.addListener(_onController);
     _reload();
+    _scheduleWarm();
   }
 
   void _onController() {
-    if (mounted) {
-      setState(() {});
+    if (!mounted) {
+      return;
     }
+    setState(() {});
+    _scheduleWarm();
+  }
+
+  /// Draws the latest run while the user is still on Compare, so a card click
+  /// only has to slide a page that is already built.
+  void _scheduleWarm() {
+    final result = widget.controller.result;
+    final id = widget.controller.lastHistoryRunId;
+    if (result == null || id == null || id.isEmpty) {
+      return;
+    }
+    if (widget.settled || widget.motion) {
+      return;
+    }
+    final mark = result.added > 0 ? statusAdded : _preferredMark(result);
+    if (_detail == result && _selectedId == id && _detailMark == mark && _pane.value == 1) {
+      return;
+    }
+    final serial = ++_warmSerial;
+    SchedulerBinding.instance.scheduleTask(() {
+      if (!mounted || serial != _warmSerial) {
+        return;
+      }
+      if (widget.settled || widget.motion) {
+        return;
+      }
+      if (widget.controller.result != result || widget.controller.lastHistoryRunId != id) {
+        return;
+      }
+      _pane.value = 1;
+      setState(() {
+        _selectedId = id;
+        _detail = result;
+        _detailLoading = false;
+        _detailQueued = false;
+        _queuedDetail = null;
+        _queuedBytes = null;
+        _detailMark = mark;
+        _previewAdded = result.added;
+        _previewRemoved = result.removed;
+        _previewCheck = result.check;
+        _previewKeep = result.keep;
+      });
+    }, Priority.idle);
+  }
+
+  void _onPaneStatus(AnimationStatus status) {
+    if ((status == AnimationStatus.completed || status == AnimationStatus.dismissed) &&
+        mounted) {
+      _flushDetail();
+    }
+    if (status == AnimationStatus.dismissed && mounted && _selectedId == null) {
+      _releaseParkedDetail();
+    }
+  }
+
+  void _releaseParkedDetail() {
+    final serial = _openSerial;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || serial != _openSerial || _selectedId != null || _pane.value > 0.001) {
+        return;
+      }
+      if (_detail == null && !_detailLoading && !_prepareDetail) {
+        return;
+      }
+      setState(() {
+        _detail = null;
+        _detailLoading = false;
+        _prepareDetail = false;
+        _detailQueued = false;
+        _queuedDetail = null;
+        _queuedBytes = null;
+      });
+    });
   }
 
   @override
   void dispose() {
     widget.controller.removeListener(_onController);
+    _pane.removeStatusListener(_onPaneStatus);
+    _paneSlide.dispose();
+    _pane.dispose();
     _searchController.dispose();
     super.dispose();
   }
@@ -79,69 +196,146 @@ class _HistoryPageState extends State<HistoryPage> {
   @override
   void didUpdateWidget(covariant HistoryPage oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (!widget.active && oldWidget.active) {
+      _scheduleWarm();
+    }
     if (widget.openRunToken != oldWidget.openRunToken) {
+      _deferredList = null;
       _openFromShell(widget.openRunId);
-      return;
+    } else if (widget.active && !oldWidget.active && widget.motion) {
+      // History tab, not a card. The warmed job-card page stays off this slide.
+      _pane.value = 0;
+      _selectedId = null;
+      _detail = null;
+      _detailLoading = false;
+      _detailQueued = false;
+      _prepareDetail = false;
+    } else if (!widget.motion && _deferredList != null) {
+      final list = _deferredList!;
+      _deferredList = null;
+      _publishList(list);
+    } else if (widget.settled && !oldWidget.settled && _selectedId == null) {
+      _reload(quiet: true);
     }
-    // Leaving History: drop heavy detail table so Compare stays smooth.
-    if (!widget.active && oldWidget.active && _selectedId != null) {
-      setState(() {
-        _selectedId = null;
-        _detail = null;
-        _detailLoading = false;
-      });
-      return;
-    }
-    if (widget.active && !oldWidget.active && _selectedId == null) {
-      _reload();
+    if (!widget.motion && !_pane.isAnimating) {
+      _flushDetail();
     }
   }
 
   Future<void> _openFromShell(String? id) async {
-    await _reload();
-    if (!mounted) {
+    final mark = widget.openMark;
+    if (id != null && id.isNotEmpty) {
+      HistoryRunSummary? known;
+      for (final item in _all) {
+        if (item.id == id) {
+          known = item;
+          break;
+        }
+      }
+      await _openRun(known ?? _placeholderRun(id), mark: mark, glide: !widget.motion);
       return;
     }
-    if (id != null && id.isNotEmpty) {
-      final match = _all.where((item) => item.id == id);
-      if (match.isNotEmpty) {
-        await _openRun(match.first, mark: widget.openMark);
+    if (_all.isEmpty) {
+      await _reload(quiet: true);
+      if (!mounted || _all.isEmpty) {
         return;
       }
     }
-    if (_all.isNotEmpty) {
-      await _openRun(_all.first, mark: widget.openMark);
-    }
+    await _openRun(_all.first, mark: mark, glide: !widget.motion);
   }
 
-  Future<void> _reload() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
+  HistoryRunSummary _placeholderRun(String id) {
+    return HistoryRunSummary(
+      id: id,
+      savedAt: '',
+      company: '',
+      branch: '',
+      from: '',
+      to: '',
+      added: 0,
+      removed: 0,
+      check: 0,
+      keep: 0,
+      rowCount: 0,
+    );
+  }
+
+  Future<void> _reload({bool quiet = false}) async {
+    final serial = ++_reloadSerial;
+    _deferredList = null;
+    if (!quiet && mounted) {
+      if (_all.isEmpty && !_loading) {
+        setState(() {
+          _loading = true;
+          _error = null;
+        });
+      } else if (_all.isNotEmpty && !_refreshing) {
+        setState(() => _refreshing = true);
+      }
+    }
     try {
       final list = await _store.listHistory();
-      if (!mounted) {
+      if (!mounted || serial != _reloadSerial) {
         return;
       }
-      setState(() {
-        _all = list;
-        _loading = false;
-        if (_selectedId != null &&
-            !list.any((item) => item.id == _selectedId)) {
-          _selectedId = null;
-          _detail = null;
-        }
-      });
+      if (widget.motion) {
+        _deferredList = list;
+        return;
+      }
+      _publishList(list);
     } catch (error) {
-      if (!mounted) {
+      if (!mounted || serial != _reloadSerial) {
         return;
       }
       setState(() {
         _loading = false;
+        _refreshing = false;
         _error = '$error';
       });
     }
+  }
+
+  void _publishList(List<HistoryRunSummary> list) {
+    if (_sameRuns(list) && !_loading && _error == null) {
+      if (_refreshing) {
+        setState(() => _refreshing = false);
+      }
+      return;
+    }
+    setState(() {
+      _all = list;
+      _loading = false;
+      _refreshing = false;
+      _error = null;
+      if (_selectedId != null && !list.any((item) => item.id == _selectedId)) {
+        _selectedId = null;
+        _detail = null;
+      }
+    });
+  }
+
+  bool _sameRuns(List<HistoryRunSummary> list) {
+    if (list.length != _all.length) {
+      return false;
+    }
+    for (var i = 0; i < list.length; i++) {
+      final next = list[i];
+      final current = _all[i];
+      if (next.id != current.id ||
+          next.savedAt != current.savedAt ||
+          next.rowCount != current.rowCount ||
+          next.added != current.added ||
+          next.removed != current.removed ||
+          next.check != current.check ||
+          next.keep != current.keep ||
+          next.branch != current.branch ||
+          next.company != current.company ||
+          next.from != current.from ||
+          next.to != current.to) {
+        return false;
+      }
+    }
+    return true;
   }
 
   List<String> get _branchOptions {
@@ -204,23 +398,150 @@ class _HistoryPageState extends State<HistoryPage> {
     });
   }
 
-  Future<void> _openRun(HistoryRunSummary summary, {String? mark}) async {
-    setState(() {
-      _selectedId = summary.id;
-      _detailLoading = true;
-      _detail = null;
-    });
-    final loaded = await _store.loadHistory(summary.id);
-    if (!mounted) {
+  CompareResultView? _memoryRun(String id) {
+    final current = widget.controller.result;
+    if (current == null || widget.controller.lastHistoryRunId != id) {
+      return null;
+    }
+    return current;
+  }
+
+  Future<void> _openRun(HistoryRunSummary summary, {String? mark, bool glide = true}) async {
+    final serial = ++_openSerial;
+    final id = summary.id;
+    final animate = glide && !widget.motion;
+    final cached = _memoryRun(id);
+    final resolvedMark = (mark != null && mark.isNotEmpty)
+        ? mark
+        : (cached != null ? _preferredMark(cached) : _detailMark);
+    if (cached != null &&
+        _detail == cached &&
+        _selectedId == id &&
+        _detailMark == resolvedMark &&
+        _pane.value == 1 &&
+        !_detailLoading) {
       return;
     }
-    setState(() {
-      _detailLoading = false;
-      _detail = loaded;
-      if (loaded != null) {
-        _detailMark = (mark != null && mark.isNotEmpty) ? mark : _preferredMark(loaded);
+    if (cached == null) {
+      setState(() {
+        _selectedId = id;
+        _detail = null;
+        _detailLoading = false;
+        _prepareDetail = false;
+        _queuedDetail = null;
+        _queuedBytes = null;
+        _queuedMark = mark;
+        _detailQueued = false;
+        _previewAdded = summary.added;
+        _previewRemoved = summary.removed;
+        _previewCheck = summary.check;
+        _previewKeep = summary.keep;
+        if (mark != null && mark.isNotEmpty) {
+          _detailMark = mark;
+        }
+      });
+      final bytes = await _store.loadHistoryBytes(id);
+      if (!mounted || serial != _openSerial || _selectedId != id) {
+        return;
       }
+      final loaded = bytes == null ? null : _store.compareViewFromBytes(bytes);
+      if (!mounted || serial != _openSerial || _selectedId != id) {
+        return;
+      }
+      setState(() {
+        _detail = loaded;
+        _detailLoading = false;
+        _prepareDetail = true;
+        if (loaded != null && (mark == null || mark.isEmpty)) {
+          _detailMark = _preferredMark(loaded);
+        }
+      });
+    } else {
+      setState(() {
+        _selectedId = id;
+        _detail = cached;
+        _detailLoading = false;
+        _prepareDetail = true;
+        _queuedDetail = null;
+        _queuedBytes = null;
+        _queuedMark = mark;
+        _detailQueued = false;
+        _detailMark = resolvedMark;
+        _previewAdded = cached.added;
+        _previewRemoved = cached.removed;
+        _previewCheck = cached.check;
+        _previewKeep = cached.keep;
+      });
+    }
+    await _revealDetail(serial, id, animate);
+  }
+
+  Future<void> _revealDetail(int serial, String id, bool animate) async {
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted || serial != _openSerial || _selectedId != id) {
+      return;
+    }
+    if (!animate) {
+      _pane.value = 1;
+      return;
+    }
+    if (_pane.value < 1) {
+      _pane.forward(from: _pane.value);
+    }
+  }
+
+  void _flushDetail() {
+    if (!_detailQueued || !mounted || _flushPosted) {
+      return;
+    }
+    if (_selectedId == null) {
+      _detailQueued = false;
+      return;
+    }
+    // A saved run is parsed only after the glide, so the slide itself stays light.
+    if (widget.motion || _pane.isAnimating) {
+      return;
+    }
+    _flushPosted = true;
+    final serial = _openSerial;
+    final id = _selectedId;
+    SchedulerBinding.instance.scheduleFrameCallback((_) {
+      _flushPosted = false;
+      if (!mounted || !_detailQueued || serial != _openSerial || _selectedId != id) {
+        return;
+      }
+      if (widget.motion || _pane.isAnimating) {
+        return;
+      }
+      final mark = _queuedMark;
+      final ready = _queuedDetail;
+      final bytes = _queuedBytes;
+      _detailQueued = false;
+      _queuedDetail = null;
+      _queuedBytes = null;
+      final loaded = ready ?? (bytes == null ? null : _store.compareViewFromBytes(bytes));
+      if (!mounted || serial != _openSerial || _selectedId != id) {
+        return;
+      }
+      setState(() {
+        _detailLoading = false;
+        _detail = loaded;
+        if (loaded != null) {
+          _detailMark = (mark != null && mark.isNotEmpty) ? mark : _preferredMark(loaded);
+        }
+      });
     });
+  }
+
+  void _backToList() {
+    // Do not rebuild either page on the click. Both are already drawn.
+    _selectedId = null;
+    _prepareDetail = true;
+    if (_pane.value == 0) {
+      _releaseParkedDetail();
+      return;
+    }
+    _pane.reverse();
   }
 
   String _preferredMark(CompareResultView view) {
@@ -251,7 +572,7 @@ class _HistoryPageState extends State<HistoryPage> {
           ),
           FilledButton(
             onPressed: () => Navigator.of(context).pop(true),
-            style: FilledButton.styleFrom(backgroundColor: tsRed),
+            style: glassLook(fill: tsRed, foreground: tsWhite),
             child: const Text('Delete'),
           ),
         ],
@@ -265,10 +586,10 @@ class _HistoryPageState extends State<HistoryPage> {
       return;
     }
     setState(() {
-      _selectedId = null;
-      _detail = null;
+      _all = [for (final item in _all) if (item.id != id) item];
     });
-    await _reload();
+    _backToList();
+    await _reload(quiet: true);
   }
 
   Future<void> _exportDetail() async {
@@ -311,18 +632,51 @@ class _HistoryPageState extends State<HistoryPage> {
 
   @override
   Widget build(BuildContext context) {
-    if (_selectedId != null) {
-      return _DetailView(
+    final list = RepaintBoundary(key: _listBoundary, child: _buildList());
+    final wantsDetail = _selectedId != null || _detail != null || _detailLoading;
+    if (!wantsDetail) {
+      return list;
+    }
+    final detail = RepaintBoundary(key: _detailBoundary, child: _buildDetail());
+    return AnimatedBuilder(
+      animation: _paneSlide,
+      builder: (context, _) {
+        final t = _paneSlide.value;
+        // Keep both pages mounted at rest, so Back only moves two finished pictures.
+        return ClipRect(
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              FractionalTranslation(
+                translation: Offset(-t, 0),
+                transformHitTests: false,
+                child: IgnorePointer(ignoring: t > 0.001, child: list),
+              ),
+              FractionalTranslation(
+                translation: Offset(1 - t, 0),
+                transformHitTests: false,
+                child: IgnorePointer(ignoring: t < 0.999, child: detail),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildDetail() {
+    return _DetailView(
         loading: _detailLoading,
         detail: _detail,
+        previewAdded: _previewAdded,
+        previewRemoved: _previewRemoved,
+        previewCheck: _previewCheck,
+        previewKeep: _previewKeep,
         mark: _detailMark,
-        onBack: () => setState(() {
-          _selectedId = null;
-          _detail = null;
-        }),
-        onSelectMark: (mark) => setState(() {
+        onBack: _backToList,
+        onSelectMark: (mark) {
           _detailMark = mark;
-        }),
+        },
         onExport: _exportDetail,
         canWrite: widget.controller.canWriteToPractice,
         writeAllCount: _detail == null
@@ -346,8 +700,9 @@ class _HistoryPageState extends State<HistoryPage> {
           }
         },
       );
-    }
+  }
 
+  Widget _buildList() {
     final items = _filtered;
     return ColoredBox(
       color: tsBg,
@@ -358,47 +713,49 @@ class _HistoryPageState extends State<HistoryPage> {
           children: [
             Row(
               children: [
+                if (widget.onHome != null) ...[
+                  OutlinedButton.icon(
+                    onPressed: widget.onHome,
+                    style: glassLook(
+                      foreground: tsGreen,
+                      visualDensity: VisualDensity.compact,
+                    ),
+                    icon: const Icon(Icons.arrow_back, size: 18),
+                    label: const Text('Back'),
+                  ),
+                  const SizedBox(width: 12),
+                ],
                 const Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Compare history',
-                        style: TextStyle(
-                          fontSize: 26,
-                          fontWeight: FontWeight.w700,
-                          color: tsInk,
-                        ),
-                      ),
-                    ],
+                  child: Text(
+                    'Compare history',
+                    style: TextStyle(
+                      fontSize: 26,
+                      fontWeight: FontWeight.w700,
+                      color: tsInk,
+                    ),
                   ),
                 ),
                 OutlinedButton(
                   onPressed: () => setState(() => _tableView = true),
-                  style: OutlinedButton.styleFrom(
-                    backgroundColor: _tableView ? tsGreen : tsWhite,
-                    foregroundColor: _tableView ? tsWhite : tsInk,
-                    side: BorderSide(color: _tableView ? tsGreen : tsLine),
+                  style: glassLook(
+                    fill: _tableView ? tsGreen : glassQuietFill,
+                    foreground: _tableView ? tsWhite : tsInk,
                   ),
                   child: const Text('Table'),
                 ),
                 const SizedBox(width: 8),
                 OutlinedButton(
                   onPressed: () => setState(() => _tableView = false),
-                  style: OutlinedButton.styleFrom(
-                    backgroundColor: _tableView ? tsWhite : tsGreen,
-                    foregroundColor: _tableView ? tsInk : tsWhite,
-                    side: BorderSide(color: _tableView ? tsLine : tsGreen),
+                  style: glassLook(
+                    fill: _tableView ? glassQuietFill : tsGreen,
+                    foreground: _tableView ? tsInk : tsWhite,
                   ),
                   child: const Text('Cards'),
                 ),
                 const SizedBox(width: 8),
                 OutlinedButton.icon(
-                  onPressed: _loading ? null : _reload,
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: tsGreen,
-                    side: const BorderSide(color: tsGreen),
-                  ),
+                  onPressed: (_loading || _refreshing) ? null : () => _reload(),
+                  style: glassLook(foreground: tsGreen),
                   icon: const Icon(Icons.refresh, size: 18),
                   label: const Text('Refresh'),
                 ),
@@ -867,6 +1224,10 @@ class _DetailView extends StatefulWidget {
   const _DetailView({
     required this.loading,
     required this.detail,
+    required this.previewAdded,
+    required this.previewRemoved,
+    required this.previewCheck,
+    required this.previewKeep,
     required this.mark,
     required this.onBack,
     required this.onSelectMark,
@@ -882,6 +1243,10 @@ class _DetailView extends StatefulWidget {
 
   final bool loading;
   final CompareResultView? detail;
+  final int previewAdded;
+  final int previewRemoved;
+  final int previewCheck;
+  final int previewKeep;
   final String mark;
   final VoidCallback onBack;
   final ValueChanged<String> onSelectMark;
@@ -898,50 +1263,158 @@ class _DetailView extends StatefulWidget {
   State<_DetailView> createState() => _DetailViewState();
 }
 
-class _DetailViewState extends State<_DetailView> {
-  final TracksheetRowFilters _filters = TracksheetRowFilters();
-  final TextEditingController _searchController = TextEditingController();
+class _DetailViewState extends State<_DetailView> with SingleTickerProviderStateMixin {
+  static const List<String> _markOrder = [
+    statusAdded,
+    statusRemoved,
+    statusCheck,
+    statusKeep,
+  ];
+
+  final Map<String, TracksheetRowFilters> _filtersByMark = {};
+  final Map<String, TextEditingController> _searchByMark = {};
+  final Map<String, GlobalKey> _markBoundary = {};
   Object? _boundDetail;
-  String? _cachedMark;
-  List<OutcomeRow> _markRows = const [];
+  late String _shownMark;
+  String? _incoming;
+  int _markSerial = 0;
+  bool _holdAtStart = false;
+  late final AnimationController _markSlide;
+
+  @override
+  void initState() {
+    super.initState();
+    _boundDetail = widget.detail;
+    _shownMark = widget.mark;
+    _markSlide = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 420),
+    );
+    _markSlide.addStatusListener((status) {
+      if (status == AnimationStatus.completed) {
+        _finishMarkSlide();
+      }
+    });
+  }
 
   @override
   void dispose() {
-    _searchController.dispose();
+    _markSlide.dispose();
+    for (final search in _searchByMark.values) {
+      search.dispose();
+    }
     super.dispose();
   }
 
-  void _refreshMarkRows({bool clearFilters = false}) {
-    if (clearFilters) {
-      _filters.clear();
-      _searchController.clear();
+  TracksheetRowFilters _filtersFor(String mark) {
+    return _filtersByMark.putIfAbsent(mark, TracksheetRowFilters.new);
+  }
+
+  TextEditingController _searchFor(String mark) {
+    return _searchByMark.putIfAbsent(mark, TextEditingController.new);
+  }
+
+  GlobalKey _boundaryFor(String mark) {
+    return _markBoundary.putIfAbsent(mark, GlobalKey.new);
+  }
+
+  int _markIndex(String mark) {
+    final index = _markOrder.indexOf(mark);
+    return index < 0 ? 0 : index;
+  }
+
+  List<OutcomeRow> _rowsFor(String mark) {
+    final detail = widget.detail;
+    if (detail == null) {
+      return const [];
     }
-    _boundDetail = widget.detail;
-    _cachedMark = widget.mark;
-    _markRows = widget.detail?.rows
-            .where((row) => row.mark == widget.mark)
-            .toList(growable: false) ??
-        const <OutcomeRow>[];
+    return [
+      for (final row in detail.rows)
+        if (row.mark == mark) row,
+    ];
+  }
+
+  void _queueMark(String mark) {
+    if (mark == _shownMark) {
+      _incoming = null;
+      _holdAtStart = false;
+      return;
+    }
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _shownMark = mark;
+      _incoming = null;
+      _holdAtStart = false;
+      _filtersFor(mark).clear();
+      _searchFor(mark).clear();
+      return;
+    }
+    final serial = ++_markSerial;
+    _incoming = mark;
+    _holdAtStart = true;
+    _filtersFor(mark).clear();
+    _searchFor(mark).clear();
+    WidgetsBinding.instance.endOfFrame.then((_) {
+      if (!mounted || serial != _markSerial || _incoming != mark) {
+        return;
+      }
+      _holdAtStart = false;
+      _markSlide.value = 0;
+      _markSlide.forward();
+    });
+  }
+
+  void _selectMark(String mark) {
+    if (mark == (_incoming ?? _shownMark)) {
+      return;
+    }
+    widget.onSelectMark(mark);
+    _queueMark(mark);
+    setState(() {});
   }
 
   @override
   void didUpdateWidget(covariant _DetailView oldWidget) {
     super.didUpdateWidget(oldWidget);
     final detailChanged = !identical(widget.detail, _boundDetail);
-    final markChanged = oldWidget.mark != widget.mark;
-    if (detailChanged || markChanged) {
-      _refreshMarkRows(clearFilters: true);
+    if (detailChanged) {
+      _boundDetail = widget.detail;
+      _shownMark = widget.mark;
+      _incoming = null;
+      _holdAtStart = false;
+      _markSerial++;
+      for (final filters in _filtersByMark.values) {
+        filters.clear();
+      }
+      for (final search in _searchByMark.values) {
+        search.clear();
+      }
+      return;
     }
+    if (widget.mark != _shownMark && widget.mark != _incoming) {
+      _queueMark(widget.mark);
+    }
+  }
+
+  void _finishMarkSlide() {
+    final arrived = _incoming;
+    if (arrived == null) {
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _incoming != arrived || _markSlide.status != AnimationStatus.completed) {
+        return;
+      }
+      setState(() {
+        _shownMark = arrived;
+        _incoming = null;
+        _holdAtStart = false;
+      });
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    if (!identical(widget.detail, _boundDetail) ||
-        _cachedMark != widget.mark) {
-      _refreshMarkRows();
-    }
-    final markRows = _markRows;
-    final rows = _filters.apply(markRows);
+    final targetMark = _incoming ?? _shownMark;
     return ColoredBox(
       color: tsBg,
       child: Padding(
@@ -953,9 +1426,8 @@ class _DetailViewState extends State<_DetailView> {
               children: [
                 OutlinedButton.icon(
                   onPressed: widget.onBack,
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: tsGreen,
-                    side: const BorderSide(color: tsGreen),
+                  style: glassLook(
+                    foreground: tsGreen,
                     visualDensity: VisualDensity.compact,
                   ),
                   icon: const Icon(Icons.arrow_back, size: 18),
@@ -964,9 +1436,8 @@ class _DetailViewState extends State<_DetailView> {
                 const SizedBox(width: 10),
                 OutlinedButton.icon(
                   onPressed: widget.onDelete,
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: tsRed,
-                    side: const BorderSide(color: tsRed),
+                  style: glassLook(
+                    foreground: tsRed,
                     visualDensity: VisualDensity.compact,
                   ),
                   icon: const Icon(Icons.delete_outline, size: 18),
@@ -977,20 +1448,21 @@ class _DetailViewState extends State<_DetailView> {
                   onPressed: widget.canWrite && widget.writeAllCount > 0
                       ? widget.onWriteAll
                       : null,
-                  style: FilledButton.styleFrom(
-                    backgroundColor: tsGreen,
-                    foregroundColor: tsWhite,
+                  style: glassLook(
+                    fill: tsGreen,
+                    foreground: tsWhite,
                     visualDensity: VisualDensity.compact,
                   ),
                   icon: const Icon(Icons.save_outlined, size: 18),
-                  label: Text('Write all (${widget.writeAllCount})'),
+                  label: Text(
+                    widget.loading ? 'Write all' : 'Write all (${widget.writeAllCount})',
+                  ),
                 ),
                 const SizedBox(width: 10),
                 OutlinedButton.icon(
                   onPressed: widget.detail == null ? null : widget.onExport,
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: tsGreen,
-                    side: const BorderSide(color: tsGreen),
+                  style: glassLook(
+                    foreground: tsGreen,
                     visualDensity: VisualDensity.compact,
                   ),
                   icon: const Icon(Icons.table_view_outlined, size: 18),
@@ -1014,8 +1486,17 @@ class _DetailViewState extends State<_DetailView> {
                 ),
               ],
               const SizedBox(height: 10),
+            _DetailTabs(
+              added: widget.detail?.added ?? widget.previewAdded,
+              removed: widget.detail?.removed ?? widget.previewRemoved,
+              check: widget.detail?.check ?? widget.previewCheck,
+              keep: widget.detail?.keep ?? widget.previewKeep,
+              selected: targetMark,
+              onSelect: _selectMark,
+            ),
+            const SizedBox(height: 8),
             if (widget.loading)
-              const Expanded(child: Center(child: CircularProgressIndicator()))
+              const Expanded(child: SizedBox.expand())
             else if (widget.detail == null)
               const Expanded(
                 child: Center(
@@ -1025,52 +1506,93 @@ class _DetailViewState extends State<_DetailView> {
                   ),
                 ),
               )
-            else ...[
-              _DetailTabs(
-                detail: widget.detail!,
-                selected: widget.mark,
-                onSelect: widget.onSelectMark,
-              ),
-              const SizedBox(height: 8),
-              if (widget.mark == statusCheck)
-                Expanded(
-                  child: CheckWorkbench(
-                    rows: markRows,
-                    vouchers: widget.detail!.vouchers,
-                    canWrite: widget.canWrite,
-                    isWritten: widget.isWritten,
-                    onWrite: widget.onWriteOne,
-                  ),
-                )
-              else ...[
-              TracksheetFilterBar(
-                sourceRows: markRows,
-                filters: _filters,
-                searchController: _searchController,
-                visibleCount: rows.length,
-                onChanged: () {
-                  if (mounted) {
-                    setState(() {});
-                  }
-                },
-                onExport: widget.onExport,
-              ),
-              const SizedBox(height: 8),
-              Expanded(
-                child: JobsResultTable(
-                  key: ValueKey(widget.mark),
-                  rows: rows,
-                  emptyLabel: markRows.isEmpty
-                      ? 'No rows with this action status.'
-                      : 'No rows match these filters.',
-                  onWrite: widget.canWrite ? widget.onWriteOne : null,
-                  isWritten: widget.isWritten,
-                ),
-              ),
-              ],
-            ],
+            else
+              Expanded(child: _slidingMarks()),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _slidingMarks() {
+    final shown = _markPage(_shownMark);
+    final incomingMark = _incoming;
+    if (incomingMark == null) {
+      return shown;
+    }
+    final incoming = _markPage(incomingMark);
+    final dir = _markIndex(incomingMark) >= _markIndex(_shownMark) ? 1.0 : -1.0;
+    return AnimatedBuilder(
+      animation: _markSlide,
+      builder: (context, _) {
+        final t = _holdAtStart ? 0.0 : Curves.easeOutQuart.transform(_markSlide.value);
+        final moving = t > 0.001 && t < 0.999;
+        return ClipRect(
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              FractionalTranslation(
+                translation: Offset(-dir * t, 0),
+                transformHitTests: false,
+                child: IgnorePointer(ignoring: moving || t > 0.001, child: shown),
+              ),
+              FractionalTranslation(
+                translation: Offset(dir * (1 - t), 0),
+                transformHitTests: false,
+                child: IgnorePointer(ignoring: t < 0.999, child: incoming),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _markPage(String mark) {
+    final markRows = _rowsFor(mark);
+    if (mark == statusCheck) {
+      return RepaintBoundary(
+        key: _boundaryFor(mark),
+        child: CheckWorkbench(
+          rows: markRows,
+          vouchers: widget.detail!.vouchers,
+          canWrite: widget.canWrite,
+          isWritten: widget.isWritten,
+          onWrite: widget.onWriteOne,
+        ),
+      );
+    }
+    final filters = _filtersFor(mark);
+    final rows = filters.apply(markRows);
+    return RepaintBoundary(
+      key: _boundaryFor(mark),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TracksheetFilterBar(
+            sourceRows: markRows,
+            filters: filters,
+            searchController: _searchFor(mark),
+            visibleCount: rows.length,
+            onChanged: () {
+              if (mounted) {
+                setState(() {});
+              }
+            },
+            onExport: widget.onExport,
+          ),
+          const SizedBox(height: 8),
+          Expanded(
+            child: JobsResultTable(
+              rows: rows,
+              emptyLabel: markRows.isEmpty
+                  ? 'No rows with this action status.'
+                  : 'No rows match these filters.',
+              onWrite: widget.canWrite ? widget.onWriteOne : null,
+              isWritten: widget.isWritten,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -1078,22 +1600,28 @@ class _DetailViewState extends State<_DetailView> {
 
 class _DetailTabs extends StatelessWidget {
   const _DetailTabs({
-    required this.detail,
+    required this.added,
+    required this.removed,
+    required this.check,
+    required this.keep,
     required this.selected,
     required this.onSelect,
   });
 
-  final CompareResultView detail;
+  final int added;
+  final int removed;
+  final int check;
+  final int keep;
   final String selected;
   final ValueChanged<String> onSelect;
 
   @override
   Widget build(BuildContext context) {
     final tabs = <(String, int)>[
-      (statusAdded, detail.added),
-      (statusRemoved, detail.removed),
-      (statusCheck, detail.check),
-      (statusKeep, detail.keep),
+      (statusAdded, added),
+      (statusRemoved, removed),
+      (statusCheck, check),
+      (statusKeep, keep),
     ];
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,

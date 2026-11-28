@@ -106,11 +106,10 @@ class _SettingsPageState extends State<SettingsPage> {
                             _pushFields();
                             controller.checkConnection();
                           },
-                    style: FilledButton.styleFrom(
-                      backgroundColor: tsGreen,
-                      foregroundColor: tsWhite,
+                    style: glassLook(
+                      fill: tsGreen,
+                      foreground: tsWhite,
                       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                     ),
                     icon: Icon(
                       controller.checkingConnection
@@ -166,7 +165,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   _VoucherTypes(controller: controller),
                   const SizedBox(height: 28),
                   const Text(
-                    'Version 1.0.2',
+                    'Version 1.0.4',
                     style: TextStyle(
                       fontSize: 12,
                       fontWeight: FontWeight.w700,
@@ -403,10 +402,9 @@ class _VoucherTypeDialogState extends State<_VoucherTypeDialog> {
                                 controller.saveVoucherTypes(_ticks);
                                 Navigator.of(context).pop();
                               },
-                        style: FilledButton.styleFrom(
-                          backgroundColor: tsGreen,
-                          foregroundColor: tsWhite,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                        style: glassLook(
+                          fill: tsGreen,
+                          foreground: tsWhite,
                         ),
                         child: const Text('Save'),
                       ),

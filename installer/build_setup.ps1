@@ -1,10 +1,10 @@
-# Build AryabhangyCompare-Setup-1.0.2.exe
+# Build AryabhangyCompare-Setup-1.0.4.exe
 # The installer carries the Windows app, the compare package, and Python.
 $ErrorActionPreference = "Stop"
 
 $installerDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $root = Split-Path -Parent $installerDir
-$version = "1.0.2"
+$version = "1.0.4"
 $pythonVersion = "3.12.10"
 $cache = Join-Path $installerDir "cache"
 $runtimeCache = Join-Path $cache "runtime"
@@ -88,6 +88,12 @@ if (Test-Path $stage) {
 }
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
 Copy-Item (Join-Path $release "*") $stage -Recurse
+foreach ($extra in @("runtime", "compare")) {
+  $dest = Join-Path $stage $extra
+  if (Test-Path $dest) {
+    Remove-Item $dest -Recurse -Force
+  }
+}
 Copy-Item $runtimeCache (Join-Path $stage "runtime") -Recurse
 $compareStage = Join-Path $stage "compare"
 New-Item -ItemType Directory -Force -Path $compareStage | Out-Null

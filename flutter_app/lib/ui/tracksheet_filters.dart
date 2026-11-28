@@ -374,12 +374,11 @@ class _TracksheetFilterBarState extends State<TracksheetFilterBar> {
           if (widget.onExport != null)
             FilledButton.icon(
               onPressed: widget.onExport,
-              style: FilledButton.styleFrom(
-                backgroundColor: tsGreen,
-                foregroundColor: tsWhite,
+              style: glassLook(
+                fill: tsGreen,
+                foreground: tsWhite,
                 visualDensity: VisualDensity.compact,
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                 minimumSize: const Size(0, 32),
                 tapTargetSize: MaterialTapTargetSize.shrinkWrap,
               ),
@@ -444,9 +443,7 @@ class _CustomDateButton extends StatelessWidget {
             onPicked(DateTime(picked.year, picked.month, picked.day));
           }
         },
-        style: OutlinedButton.styleFrom(
-          foregroundColor: tsInk,
-          side: const BorderSide(color: tsLine),
+        style: glassLook(
           padding: const EdgeInsets.symmetric(horizontal: 10),
           visualDensity: VisualDensity.compact,
           minimumSize: const Size(0, 32),

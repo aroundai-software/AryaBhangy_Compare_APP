@@ -1,5 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
+import 'dart:typed_data';
 
 import 'package:path/path.dart' as p;
 
@@ -172,50 +174,27 @@ class ResultStore {
       const JsonEncoder.withIndent('  ').convert(stamped.toJson()),
       flush: true,
     );
+    _rememberSummary(dir, _summaryFields(
+      id: id,
+      savedAt: stamped.savedAt,
+      company: stamped.company,
+      branch: stamped.branch,
+      from: stamped.from,
+      to: stamped.to,
+      added: stamped.added,
+      removed: stamped.removed,
+      check: stamped.check,
+      keep: stamped.keep,
+      rowCount: stamped.rows.length,
+    ));
     await pruneHistory(_maxHistoryRuns);
     return id;
   }
 
   Future<List<HistoryRunSummary>> listHistory() async {
     final dir = await _historyDir();
-    final files = await dir
-        .list()
-        .where((entity) => entity is File && entity.path.endsWith('.json'))
-        .cast<File>()
-        .toList();
-    final summaries = <HistoryRunSummary>[];
-    for (final file in files) {
-      try {
-        final text = await file.readAsString();
-        final decoded = jsonDecode(text);
-        if (decoded is! Map) {
-          continue;
-        }
-        final map = Map<String, dynamic>.from(decoded);
-        final id = p.basenameWithoutExtension(file.path);
-        final rows = map['rows'];
-        final rowCount = rows is List ? rows.length : 0;
-        summaries.add(
-          HistoryRunSummary(
-            id: id,
-            savedAt: (map['saved_at'] ?? '').toString(),
-            company: (map['company'] ?? '').toString(),
-            branch: (map['branch'] ?? '').toString(),
-            from: (map['from'] ?? '').toString(),
-            to: (map['to'] ?? '').toString(),
-            added: _asInt(map['added']),
-            removed: _asInt(map['removed']),
-            check: _asInt(map['check']),
-            keep: map.containsKey('keep')
-                ? _asInt(map['keep'])
-                : 0,
-            rowCount: rowCount,
-          ),
-        );
-      } catch (_) {
-        // Skip corrupt files.
-      }
-    }
+    final raw = await Isolate.run(() => _loadHistorySummaries(dir.path));
+    final summaries = raw.map(_summaryFromScan).toList();
     summaries.sort((a, b) {
       final at = a.savedAtTime ?? DateTime.fromMillisecondsSinceEpoch(0);
       final bt = b.savedAtTime ?? DateTime.fromMillisecondsSinceEpoch(0);
@@ -225,14 +204,27 @@ class ResultStore {
   }
 
   Future<CompareResultView?> loadHistory(String id) async {
+    final bytes = await loadHistoryBytes(id);
+    if (bytes == null) {
+      return null;
+    }
+    return compareViewFromBytes(bytes);
+  }
+
+  /// File bytes only. The parsed view stays on the caller so a page glide
+  /// is not frozen by copying every row back onto the UI isolate.
+  Future<Uint8List?> loadHistoryBytes(String id) async {
     try {
       final dir = await _historyDir();
-      final file = File(p.join(dir.path, '$id.json'));
-      if (!await file.exists()) {
-        return null;
-      }
-      final text = await file.readAsString();
-      final decoded = jsonDecode(text);
+      return await Isolate.run(() => _readHistoryBytes(p.join(dir.path, '$id.json')));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  CompareResultView? compareViewFromBytes(Uint8List bytes) {
+    try {
+      final decoded = jsonDecode(utf8.decode(bytes));
       if (decoded is! Map) {
         return null;
       }
@@ -248,6 +240,7 @@ class ResultStore {
     if (await file.exists()) {
       await file.delete();
     }
+    _forgetSummary(dir, id);
     await forgetWrittenKeys(id);
   }
 
@@ -255,7 +248,7 @@ class ResultStore {
     final dir = await _historyDir();
     final files = await dir
         .list()
-        .where((entity) => entity is File && entity.path.endsWith('.json'))
+        .where((entity) => entity is File && _isRunFile(entity.path))
         .cast<File>()
         .toList();
     files.sort((a, b) => b.path.compareTo(a.path));
@@ -267,6 +260,186 @@ class ResultStore {
         await file.delete();
       } catch (_) {}
     }
+    _dropMissingSummaries(dir);
+  }
+}
+
+HistoryRunSummary _summaryFromScan(Map<String, Object?> map) {
+  return HistoryRunSummary(
+    id: (map['id'] ?? '').toString(),
+    savedAt: (map['savedAt'] ?? '').toString(),
+    company: (map['company'] ?? '').toString(),
+    branch: (map['branch'] ?? '').toString(),
+    from: (map['from'] ?? '').toString(),
+    to: (map['to'] ?? '').toString(),
+    added: _asInt(map['added']),
+    removed: _asInt(map['removed']),
+    check: _asInt(map['check']),
+    keep: _asInt(map['keep']),
+    rowCount: _asInt(map['rowCount']),
+  );
+}
+
+const _historyIndexName = 'index.json';
+
+bool _isRunFile(String path) {
+  final name = p.basename(path);
+  return name.endsWith('.json') && name != _historyIndexName;
+}
+
+Map<String, Object?> _summaryFields({
+  required String id,
+  required String savedAt,
+  required String company,
+  required String branch,
+  required String from,
+  required String to,
+  required int added,
+  required int removed,
+  required int check,
+  required int keep,
+  required int rowCount,
+}) {
+  return {
+    'id': id,
+    'savedAt': savedAt,
+    'company': company,
+    'branch': branch,
+    'from': from,
+    'to': to,
+    'added': added,
+    'removed': removed,
+    'check': check,
+    'keep': keep,
+    'rowCount': rowCount,
+  };
+}
+
+void _rememberSummary(Directory dir, Map<String, Object?> summary) {
+  final index = File(p.join(dir.path, _historyIndexName));
+  final items = _readIndexItems(index);
+  final id = summary['id'];
+  items.removeWhere((item) => item['id'] == id);
+  items.insert(0, summary);
+  index.writeAsStringSync(jsonEncode(items));
+}
+
+void _forgetSummary(Directory dir, String id) {
+  final index = File(p.join(dir.path, _historyIndexName));
+  if (!index.existsSync()) {
+    return;
+  }
+  final items = _readIndexItems(index)..removeWhere((item) => item['id'] == id);
+  index.writeAsStringSync(jsonEncode(items));
+}
+
+void _dropMissingSummaries(Directory dir) {
+  final index = File(p.join(dir.path, _historyIndexName));
+  if (!index.existsSync()) {
+    return;
+  }
+  final items = _readIndexItems(index).where((item) {
+    final id = item['id'];
+    return id is String && File(p.join(dir.path, '$id.json')).existsSync();
+  }).toList();
+  index.writeAsStringSync(jsonEncode(items));
+}
+
+List<Map<String, Object?>> _readIndexItems(File index) {
+  if (!index.existsSync()) {
+    return [];
+  }
+  try {
+    final decoded = jsonDecode(index.readAsStringSync());
+    if (decoded is! List) {
+      return [];
+    }
+    return [
+      for (final item in decoded)
+        if (item is Map) Map<String, Object?>.from(item),
+    ];
+  } catch (_) {
+    return [];
+  }
+}
+
+/// Uses the small index. Full run files are read only when that index is missing.
+List<Map<String, Object?>> _loadHistorySummaries(String directoryPath) {
+  final dir = Directory(directoryPath);
+  if (!dir.existsSync()) {
+    return const [];
+  }
+  final runIds = <String>{};
+  for (final entity in dir.listSync()) {
+    if (entity is File && _isRunFile(entity.path)) {
+      runIds.add(p.basenameWithoutExtension(entity.path));
+    }
+  }
+  final index = File(p.join(directoryPath, _historyIndexName));
+  final indexed = _readIndexItems(index);
+  final indexedIds = <String>{
+    for (final item in indexed)
+      if (item['id'] is String) item['id']! as String,
+  };
+  if (indexed.isNotEmpty &&
+      indexedIds.length == indexed.length &&
+      indexedIds.length == runIds.length &&
+      indexedIds.containsAll(runIds)) {
+    return indexed;
+  }
+  final summaries = _scanHistorySummaries(directoryPath);
+  try {
+    index.writeAsStringSync(jsonEncode(summaries));
+  } catch (_) {}
+  return summaries;
+}
+
+/// Reads compare files off the UI isolate. Only the small summary crosses back.
+List<Map<String, Object?>> _scanHistorySummaries(String directoryPath) {
+  final dir = Directory(directoryPath);
+  if (!dir.existsSync()) {
+    return const [];
+  }
+  final summaries = <Map<String, Object?>>[];
+  for (final entity in dir.listSync()) {
+    if (entity is! File || !_isRunFile(entity.path)) {
+      continue;
+    }
+    try {
+      final decoded = jsonDecode(entity.readAsStringSync());
+      if (decoded is! Map) {
+        continue;
+      }
+      final rows = decoded['rows'];
+      summaries.add(_summaryFields(
+        id: p.basenameWithoutExtension(entity.path),
+        savedAt: (decoded['saved_at'] ?? '').toString(),
+        company: (decoded['company'] ?? '').toString(),
+        branch: (decoded['branch'] ?? '').toString(),
+        from: (decoded['from'] ?? '').toString(),
+        to: (decoded['to'] ?? '').toString(),
+        added: _asInt(decoded['added']),
+        removed: _asInt(decoded['removed']),
+        check: _asInt(decoded['check']),
+        keep: decoded.containsKey('keep') ? _asInt(decoded['keep']) : 0,
+        rowCount: rows is List ? rows.length : 0,
+      ));
+    } catch (_) {
+      // Skip corrupt files.
+    }
+  }
+  return summaries;
+}
+
+Uint8List? _readHistoryBytes(String path) {
+  final file = File(path);
+  if (!file.existsSync()) {
+    return null;
+  }
+  try {
+    return file.readAsBytesSync();
+  } catch (_) {
+    return null;
   }
 }
 
